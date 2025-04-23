@@ -677,6 +677,12 @@ public class HuabaoProtocolDecoder extends BaseProtocolDecoder {
                     position.set(Position.KEY_BATTERY_LEVEL, buf.readUnsignedByte());
                     position.set(Position.KEY_BATTERY, buf.readUnsignedShort() / 100.0);
                     break;
+                case 0xE4:
+                    if (buf.readUnsignedByte() == 0) {
+                        position.set(Position.KEY_CHARGE, true);
+                    }
+                    position.set(Position.KEY_BATTERY_LEVEL, buf.readUnsignedByte());
+                    break;
                 case 0xE6:
                     while (buf.readerIndex() < endIndex) {
                         int sensorIndex = buf.readUnsignedByte();
@@ -859,12 +865,6 @@ public class HuabaoProtocolDecoder extends BaseProtocolDecoder {
                         }
                         position.set(Position.KEY_BATTERY_LEVEL, buf.readUnsignedByte());
                     }
-                    break;
-                case 0xE4:
-                    int chargeStatus = buf.readUnsignedByte();
-                    int batteryLevel = buf.readUnsignedByte();
-                    position.set(Position.KEY_CHARGE, chargeStatus == 0);
-                    position.set(Position.KEY_BATTERY_LEVEL, batteryLevel);
                     break;
                 default:
                     break;
