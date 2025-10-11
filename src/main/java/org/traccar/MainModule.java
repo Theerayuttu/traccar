@@ -18,11 +18,13 @@ package org.traccar;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.datatype.jsonp.JSONPModule;
+import com.fasterxml.jackson.module.blackbird.BlackbirdModule;
 import com.google.inject.AbstractModule;
 import com.google.inject.Injector;
 import com.google.inject.Provides;
 import com.google.inject.Scopes;
 import com.google.inject.name.Names;
+import com.nimbusds.oauth2.sdk.GeneralException;
 import io.netty.util.HashedWheelTimer;
 import io.netty.util.Timer;
 import org.apache.velocity.app.VelocityEngine;
@@ -79,15 +81,12 @@ import org.traccar.handler.FilterHandler;
 import org.traccar.handler.GeocoderHandler;
 import org.traccar.handler.GeolocationHandler;
 import org.traccar.handler.SpeedLimitHandler;
-import org.traccar.handler.TimeHandler;
 import org.traccar.helper.LogAction;
 import org.traccar.helper.ObjectMapperContextResolver;
 import org.traccar.helper.WebHelper;
 import org.traccar.mail.LogMailManager;
 import org.traccar.mail.MailManager;
 import org.traccar.mail.SmtpMailManager;
-import org.traccar.push.FirebaseClient;
-import org.traccar.push.PushCommandManager;
 import org.traccar.session.cache.CacheManager;
 import org.traccar.sms.HttpSmsClient;
 import org.traccar.sms.SmsManager;
@@ -106,7 +105,6 @@ import jakarta.ws.rs.client.Client;
 import jakarta.ws.rs.client.ClientBuilder;
 import java.io.IOException;
 import java.net.URISyntaxException;
-import java.net.http.HttpClient;
 import java.util.Properties;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -145,10 +143,10 @@ public class MainModule extends AbstractModule {
     @Singleton
     @Provides
     public static ObjectMapper provideObjectMapper() {
-        ObjectMapper objectMapper = new ObjectMapper();
-        objectMapper.registerModule(new JSONPModule());
-        objectMapper.disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
-        return objectMapper;
+        return new ObjectMapper()
+                .registerModule(new JSONPModule())
+                .registerModule(new BlackbirdModule())
+                .disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
     }
 
     @Singleton
@@ -190,16 +188,17 @@ public class MainModule extends AbstractModule {
     @Singleton
     @Provides
     public static OpenIdProvider provideOpenIDProvider(
-            Config config, LoginService loginService, LogAction actionLogger,
-            ObjectMapper objectMapper) throws InterruptedException, IOException, URISyntaxException {
+            Config config, LoginService loginService, LogAction actionLogger)
+            throws IOException, URISyntaxException, GeneralException {
         if (config.hasKey(Keys.OPENID_CLIENT_ID)) {
-            return new OpenIdProvider(config, loginService, actionLogger, HttpClient.newHttpClient(), objectMapper);
+            return new OpenIdProvider(config, loginService, actionLogger);
         }
         return null;
     }
 
     @Provides
-    public static WebServer provideWebServer(Injector injector, Config config) {
+    public static WebServer provideWebServer(
+            Injector injector, Config config) throws IOException {
         if (config.getInteger(Keys.WEB_PORT) > 0) {
             return new WebServer(injector, config);
         }
@@ -327,15 +326,6 @@ public class MainModule extends AbstractModule {
 
     @Singleton
     @Provides
-    public static TimeHandler provideTimeHandler(Config config) {
-        if (config.hasKey(Keys.TIME_OVERRIDE)) {
-            return new TimeHandler(config);
-        }
-        return null;
-    }
-
-    @Singleton
-    @Provides
     public static BroadcastService provideBroadcastService(
             Config config, ExecutorService executorService, ObjectMapper objectMapper) throws IOException {
         if (config.hasKey(Keys.BROADCAST_TYPE)) {
@@ -392,25 +382,6 @@ public class MainModule extends AbstractModule {
         VelocityEngine velocityEngine = new VelocityEngine();
         velocityEngine.init(properties);
         return velocityEngine;
-    }
-
-    @Singleton
-    @Provides
-    public static FirebaseClient provideFirebaseClient(Config config) throws IOException {
-        if (config.hasKey(Keys.NOTIFICATOR_FIREBASE_SERVICE_ACCOUNT)) {
-            return new FirebaseClient(config);
-        }
-        return null;
-    }
-
-    @Singleton
-    @Provides
-    public static PushCommandManager providePushCommandManager(
-            @Nullable FirebaseClient firebaseClient) throws IOException {
-        if (firebaseClient != null) {
-            return new PushCommandManager(firebaseClient);
-        }
-        return null;
     }
 
 }
