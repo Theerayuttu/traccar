@@ -75,6 +75,7 @@ import org.traccar.geocoder.GeocodeJsonGeocoder;
 import org.traccar.geolocation.GeolocationProvider;
 import org.traccar.geolocation.GoogleGeolocationProvider;
 import org.traccar.geolocation.OpenCellIdGeolocationProvider;
+import org.traccar.geolocation.UniversalGeolocationProvider;
 import org.traccar.geolocation.UnwiredGeolocationProvider;
 import org.traccar.handler.CopyAttributesHandler;
 import org.traccar.handler.FilterHandler;
@@ -255,6 +256,7 @@ public class MainModule extends AbstractModule {
             return switch (type) {
                 case "opencellid" -> new OpenCellIdGeolocationProvider(client, url, key);
                 case "unwired" -> new UnwiredGeolocationProvider(client, url, key);
+                case "universal" -> new UniversalGeolocationProvider(client, url, key);
                 default -> new GoogleGeolocationProvider(client, key);
             };
         }
@@ -317,9 +319,9 @@ public class MainModule extends AbstractModule {
     @Singleton
     @Provides
     public static FilterHandler provideFilterHandler(
-            Config config, CacheManager cacheManager, Storage storage, StatisticsManager statisticsManager) {
+            Config config, CacheManager cacheManager, StatisticsManager statisticsManager) {
         if (config.getBoolean(Keys.FILTER_ENABLE)) {
-            return new FilterHandler(config, cacheManager, storage, statisticsManager);
+            return new FilterHandler(cacheManager, statisticsManager);
         }
         return null;
     }
