@@ -51,15 +51,6 @@ import java.util.LinkedList;
 import java.util.List;
 import java.util.stream.Stream;
 
-import jakarta.mail.MessagingException;
-import org.traccar.mail.MailManager;
-import org.traccar.notification.TextTemplateFormatter;
-import java.io.IOException;
-import java.security.GeneralSecurityException;
-import java.util.HashMap;
-import java.util.Map;
-import jakarta.ws.rs.FormParam;
-
 @Path("users")
 @Produces(MediaType.APPLICATION_JSON)
 @Consumes(MediaType.APPLICATION_JSON)
@@ -73,15 +64,6 @@ public class UserResource extends BaseObjectResource<User> {
 
     @Context
     private HttpServletRequest request;
-
-    @Inject
-    private MailManager mailManager;
-
-    @Inject
-    private TextTemplateFormatter textTemplateFormatter;
-
-    // Simple in-memory map: email -> code
-    private static final Map<String, String> verificationCodes = new HashMap<>();
 
     public UserResource() {
         super(User.class);
