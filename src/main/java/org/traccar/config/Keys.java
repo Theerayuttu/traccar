@@ -427,6 +427,31 @@ public final class Keys {
             0.0);
 
     /**
+     * Distance in meters at which a linked device entering this range triggers a proximity enter event. 0 to disable.
+     */
+    public static final ConfigKey<Double> EVENT_PROXIMITY_ENTER_DISTANCE = new DoubleConfigKey(
+            "proximityEnterDistance",
+            List.of(KeyType.DEVICE),
+            0.0);
+
+    /**
+     * Distance in meters at which a linked device leaving this range triggers a proximity exit event. 0 to disable.
+     */
+    public static final ConfigKey<Double> EVENT_PROXIMITY_EXIT_DISTANCE = new DoubleConfigKey(
+            "proximityExitDistance",
+            List.of(KeyType.DEVICE),
+            0.0);
+
+    /**
+     * Distance in meters that defines "near" for the unaccompanied motion event. If the device starts moving with no
+     * linked device within this distance, an event is generated. 0 to disable.
+     */
+    public static final ConfigKey<Double> EVENT_UNACCOMPANIED_DISTANCE = new DoubleConfigKey(
+            "unaccompaniedDistance",
+            List.of(KeyType.DEVICE),
+            0.0);
+
+    /**
      * Disable device sharing on the server.
      */
     public static final ConfigKey<Boolean> DEVICE_SHARE_DISABLE = new BooleanConfigKey(
@@ -594,6 +619,14 @@ public final class Keys {
     public static final ConfigKey<String> DATABASE_REGISTER_UNKNOWN_REGEX = new StringConfigKey(
             "database.registerUnknown.regex",
             List.of(KeyType.CONFIG), "\\w{3,15}");
+
+    /**
+     * Limit latest position queries to a certain time period in seconds. This is useful for TimescaleDB
+     * to avoid scanning all time chunks. Default value is 7776000 seconds (90 days). Zero value disables the limit.
+     */
+    public static final ConfigKey<Long> DATABASE_POSITION_PERIOD = new LongConfigKey(
+            "database.positionPeriod",
+            List.of(KeyType.CONFIG), 7776000L);
 
     /**
      * Store empty messages as positions. For example, heartbeats.
