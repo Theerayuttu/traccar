@@ -114,6 +114,11 @@ public class SummaryReportProvider {
                 result.setEndOdometer(last.getDouble(Position.KEY_TOTAL_DISTANCE));
             }
 
+            result.setStartLat(first.getLatitude());
+            result.setStartLon(first.getLongitude());
+            result.setEndLat(last.getLatitude());
+            result.setEndLon(last.getLongitude());
+
             result.setStartTime(first.getFixTime());
             result.setEndTime(last.getFixTime());
             return List.of(result);

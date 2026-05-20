@@ -100,6 +100,7 @@ public class UserResource extends BaseObjectResource<User> {
     @POST
     public Response add(User entity) throws StorageException {
 
+        //add
         String inputKey = (String) entity.getAttributes().get("keycode");
         String serverKey = (String) permissionsService.getServer().getAttributes().get("regiskey");
 

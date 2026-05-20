@@ -135,9 +135,9 @@ public final class LogAction {
             action.setObjectType(Introspector.decapitalize(Device.class.getSimpleName()));
             action.setObjectId(deviceId);
         }
-        action.set("response", response);
-        action.set("type", type);
-        action.set("data", data);
+        action.set("response", response); // add
+        action.set("type", type); // add
+        action.set("data", data); // add
         storeAction(action);
     }
 
