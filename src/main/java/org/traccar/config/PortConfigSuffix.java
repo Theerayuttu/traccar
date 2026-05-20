@@ -286,6 +286,8 @@ public class PortConfigSuffix extends ConfigSuffix<Integer> {
         PORTS.put("ttnhttp", 5261);
         PORTS.put("smartcar", 5262);
         PORTS.put("jt1078", 5263);
+        PORTS.put("xexun3", 5264);
+        PORTS.put("radshid", 5265);
     }
 
     PortConfigSuffix(String key, List<KeyType> types) {
