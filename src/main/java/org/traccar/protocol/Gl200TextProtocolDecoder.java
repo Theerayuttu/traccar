@@ -90,6 +90,7 @@ public class Gl200TextProtocolDecoder extends BaseProtocolDecoder {
             Map.entry("C3", "GL320M"),
             Map.entry("DC", "GV600MG"),
             Map.entry("DE", "GL500M"),
+            Map.entry("DF", "CV100LG"),
             Map.entry("F1", "GV350M"),
             Map.entry("F8", "GV800W"),
             Map.entry("FC", "GV600W"),
@@ -1031,8 +1032,9 @@ public class Gl200TextProtocolDecoder extends BaseProtocolDecoder {
             return positions; // can data not supported
         }
 
-        if (BitUtil.check(mask, 3) || BitUtil.check(mask, 4)
-                || (BitUtil.check(mask, 0) && model.equals("GV350M"))) {
+        if ((BitUtil.check(mask, 3) || BitUtil.check(mask, 4)
+                || (BitUtil.check(mask, 0) && model.equals("GV350M")))
+                && index < v.length - 2) {
             int deviceCount = Integer.parseInt(v[index++]);
             for (int i = 1; i <= deviceCount; i++) {
                 index += 1; // type

@@ -83,6 +83,7 @@ public class Jt808ProtocolDecoder extends BaseProtocolDecoder {
     public static final int MSG_REPORT_TEXT_MESSAGE = 0x6006;
     public static final int MSG_CONFIGURATION_PARAMETERS = 0x8103;
     public static final int MSG_COMMAND_RESPONSE = 0x0701;
+    public static final int MSG_TEXT_MESSAGE_RESPONSE = 0x1300;
     public static final int MSG_DRIVER_IDENTITY = 0x0702;
     public static final int MSG_VIDEO_REQUEST = 0x9101;
     public static final int MSG_VIDEO_CONTROL = 0x9102;
@@ -361,6 +362,22 @@ public class Jt808ProtocolDecoder extends BaseProtocolDecoder {
             Charset charset = Charset.isSupported("GBK") ? Charset.forName("GBK") : StandardCharsets.US_ASCII;
 
             position.set(Position.KEY_RESULT, buf.readCharSequence(buf.readableBytes() - 2, charset).toString());
+
+            return position;
+
+        } else if (type == MSG_TEXT_MESSAGE_RESPONSE) {
+
+            Position position = new Position(getProtocolName());
+            position.setDeviceId(deviceSession.getDeviceId());
+
+            getLastLocation(position, null);
+
+            int bodyLength = BitUtil.to(attribute, 10);
+
+            buf.readUnsignedShort(); // response serial number
+
+            String result = buf.readCharSequence(bodyLength - 2, StandardCharsets.UTF_16BE).toString().trim();
+            position.set(Position.KEY_RESULT, result);
 
             return position;
 
@@ -862,18 +879,30 @@ public class Jt808ProtocolDecoder extends BaseProtocolDecoder {
                     }
                     position.set(Position.KEY_BATTERY_LEVEL, buf.readUnsignedByte());
                     break;
+                case 0xE5:
+                    if (length == 1) {
+                        position.set(Position.KEY_MOTION, buf.readUnsignedByte() == 1);
+                    }
+                    break;
                 case 0xE6:
-                    String header = buf.getCharSequence(buf.readerIndex(), 7, StandardCharsets.UTF_8).toString();
-                    if (header.equals("$OBD-RT")) {
+                    if (length >= 7 && buf.getCharSequence(
+                            buf.readerIndex(), 7, StandardCharsets.UTF_8).toString().equals("$OBD-RT")) {
                         String data = buf.readCharSequence(length, StandardCharsets.UTF_8).toString();
                         decodeObdRt(position, data);
-                    } else {
+                    } else if (length >= 11 && length % 11 == 0) {
                         while (buf.readerIndex() < endIndex) {
                             int sensorIndex = buf.readUnsignedByte();
                             buf.skipBytes(6); // mac
                             position.set(Position.PREFIX_TEMP + sensorIndex, decodeCustomDouble(buf));
                             position.set("humidity" + sensorIndex, decodeCustomDouble(buf));
                         }
+                    }
+                    break;
+                case 0xE7:
+                    if (length == 8) {
+                        alarm = buf.readUnsignedShort();
+                        position.addAlarm(BitUtil.check(alarm, 0) ? Position.ALARM_VIBRATION : null);
+                        position.addAlarm(BitUtil.between(alarm, 1, 4) != 0 ? Position.ALARM_SOS : null);
                     }
                     break;
                 case 0xE8:
@@ -1074,10 +1103,12 @@ public class Jt808ProtocolDecoder extends BaseProtocolDecoder {
                     position.set(Position.KEY_CARD, stringValue.trim());
                     break;
                 case 0xEE:
-                    position.set(Position.KEY_RSSI, buf.readUnsignedByte());
-                    position.set(Position.KEY_POWER, buf.readUnsignedShort() / 1000.0);
-                    position.set(Position.KEY_BATTERY, buf.readUnsignedShort() / 1000.0);
-                    position.set(Position.KEY_SATELLITES, buf.readUnsignedByte());
+                    if (length == 6) {
+                        position.set(Position.KEY_RSSI, buf.readUnsignedByte());
+                        position.set(Position.KEY_POWER, buf.readUnsignedShort() / 1000.0);
+                        position.set(Position.KEY_BATTERY, buf.readUnsignedShort() / 1000.0);
+                        position.set(Position.KEY_SATELLITES, buf.readUnsignedByte());
+                    }
                     break;
                 case 0xF1:
                     position.set(Position.KEY_POWER, buf.readUnsignedInt() / 1000.0);
@@ -1118,6 +1149,7 @@ public class Jt808ProtocolDecoder extends BaseProtocolDecoder {
                         }
                     }
                     break;
+                case 0xEC:
                 case 0xF4:
                     while (buf.readerIndex() < endIndex) {
                         String mac = ByteBufUtil.hexDump(buf.readSlice(6)).replaceAll("(..)", "$1:");

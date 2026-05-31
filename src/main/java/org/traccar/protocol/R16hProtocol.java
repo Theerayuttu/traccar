@@ -1,5 +1,5 @@
 /*
- * Copyright 2015 - 2024 Anton Tananaev (anton@traccar.org)
+ * Copyright 2026 Anton Tananaev (anton@traccar.org)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,27 +15,29 @@
  */
 package org.traccar.protocol;
 
+import io.netty.handler.codec.string.StringDecoder;
+import io.netty.handler.codec.string.StringEncoder;
 import org.traccar.BaseProtocol;
+import org.traccar.CharacterDelimiterFrameDecoder;
 import org.traccar.PipelineBuilder;
 import org.traccar.TrackerServer;
 import org.traccar.config.Config;
-import org.traccar.model.Command;
 
 import jakarta.inject.Inject;
 
-public class NavisProtocol extends BaseProtocol {
+public class R16hProtocol extends BaseProtocol {
 
     @Inject
-    public NavisProtocol(Config config) {
-        setSupportedDataCommands(
-                Command.TYPE_CUSTOM);
+    public R16hProtocol(Config config) {
         addServer(new TrackerServer(config, getName(), false) {
             @Override
             protected void addProtocolHandlers(PipelineBuilder pipeline, Config config) {
-                pipeline.addLast(new NavisFrameDecoder());
-                pipeline.addLast(new NavisProtocolEncoder(NavisProtocol.this));
-                pipeline.addLast(new NavisProtocolDecoder(NavisProtocol.this));
+                pipeline.addLast(new CharacterDelimiterFrameDecoder(MAX_FRAME_LENGTH, "$"));
+                pipeline.addLast(new StringEncoder());
+                pipeline.addLast(new StringDecoder());
+                pipeline.addLast(new R16hProtocolDecoder(R16hProtocol.this));
             }
         });
     }
+
 }
