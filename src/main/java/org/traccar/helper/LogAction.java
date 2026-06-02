@@ -126,7 +126,9 @@ public final class LogAction {
         storeAction(action);
     }
 
-    public void command(HttpServletRequest request, long userId, long groupId, long deviceId, String type, String data, String response) {
+    public void command(
+            HttpServletRequest request, long userId, long groupId, long deviceId,
+            String type, String data, String response) {
         Action action = new Action();
         action.setAddress(WebHelper.retrieveRemoteAddress(request));
         action.setUserId(userId);
