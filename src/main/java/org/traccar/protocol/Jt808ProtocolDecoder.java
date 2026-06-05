@@ -19,7 +19,9 @@ import io.netty.buffer.ByteBuf;
 import io.netty.buffer.ByteBufUtil;
 import io.netty.buffer.Unpooled;
 import io.netty.channel.Channel;
+import org.traccar.BaseProtocol;
 import org.traccar.BaseProtocolDecoder;
+import org.traccar.config.Keys;
 import org.traccar.helper.BufferUtil;
 import org.traccar.model.WifiAccessPoint;
 import org.traccar.session.DeviceSession;
@@ -36,6 +38,7 @@ import org.traccar.model.Network;
 import org.traccar.model.Position;
 
 import java.net.SocketAddress;
+import java.net.URI;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
@@ -78,6 +81,7 @@ public class Jt808ProtocolDecoder extends BaseProtocolDecoder {
     public static final int MSG_TIME_SYNC_RESPONSE = 0x8109;
     public static final int MSG_PHOTO = 0x8888;
     public static final int MSG_TRANSPARENT = 0x0900;
+    public static final int MSG_TRANSPARENT_DOWNLINK = 0x8900;
     public static final int MSG_PARAMETER_SETTING = 0x0310;
     public static final int MSG_SEND_TEXT_MESSAGE = 0x8300;
     public static final int MSG_REPORT_TEXT_MESSAGE = 0x6006;
@@ -147,6 +151,25 @@ public class Jt808ProtocolDecoder extends BaseProtocolDecoder {
             channel.writeAndFlush(new NetworkMessage(
                     formatMessage(MSG_GENERAL_RESPONSE_2, id, true, response), remoteAddress));
         }
+    }
+
+    private void requestAttachments(Channel channel, SocketAddress remoteAddress, ByteBuf id, Position position) {
+        if (channel == null || position == null || !position.hasAttribute("alarmLabel")) {
+            return;
+        }
+        String webUrl = getConfig().getString(Keys.WEB_URL);
+        int uploadPort = getConfig().getInteger(
+                Keys.PROTOCOL_PORT.withPrefix(BaseProtocol.nameFromClass(JimiPhotoProtocol.class)));
+        if (webUrl == null || uploadPort <= 0) {
+            return;
+        }
+        String text = String.format("VIDEOUPLOAD,%s,%d,%s,0,0",
+                URI.create(webUrl).getHost(), uploadPort, position.getString("alarmLabel"));
+        ByteBuf data = Unpooled.buffer();
+        data.writeByte(0xF0);
+        data.writeCharSequence(text, StandardCharsets.US_ASCII);
+        channel.writeAndFlush(new NetworkMessage(
+                formatMessage(MSG_TRANSPARENT_DOWNLINK, id, false, data), remoteAddress));
     }
 
     private void decodeAlarm(Position position, String model, long value) {
@@ -407,7 +430,9 @@ public class Jt808ProtocolDecoder extends BaseProtocolDecoder {
 
             sendGeneralResponse(channel, remoteAddress, id, type, index);
 
-            return decodeLocation(deviceSession, buf);
+            Position position = decodeLocation(deviceSession, buf);
+            requestAttachments(channel, remoteAddress, id, position);
+            return position;
 
         } else if (type == MSG_LOCATION_REPORT_2 || type == MSG_LOCATION_REPORT_BLIND) {
 
@@ -742,14 +767,14 @@ public class Jt808ProtocolDecoder extends BaseProtocolDecoder {
                     }
                     break;
                 case 0x64:
-                    buf.readUnsignedInt(); // alarm serial number
-                    buf.readUnsignedByte(); // alarm status
-                    position.set("adasAlarm", buf.readUnsignedByte());
-                    break;
                 case 0x65:
                     buf.readUnsignedInt(); // alarm serial number
                     buf.readUnsignedByte(); // alarm status
-                    position.set("dmsAlarm", buf.readUnsignedByte());
+                    position.set(subtype == 0x64 ? "adasAlarm" : "dmsAlarm", buf.readUnsignedByte());
+                    if (length >= 47) {
+                        buf.readerIndex(endIndex - 16);
+                        position.set("alarmLabel", ByteBufUtil.hexDump(buf.readSlice(16)));
+                    }
                     break;
                 case 0x67:
                     stringValue = buf.readCharSequence(8, StandardCharsets.US_ASCII).toString();
@@ -837,6 +862,13 @@ public class Jt808ProtocolDecoder extends BaseProtocolDecoder {
                             position.set(Position.KEY_CHARGE, true);
                         } else {
                             position.set(Position.KEY_BATTERY_LEVEL, batteryLevel);
+                        }
+                    } else if (subtype == 0xE1 && length >= 12 && (length - 4) % 8 == 0) {
+                        int mcc = buf.readUnsignedShort();
+                        int mnc = buf.readUnsignedShort();
+                        while (buf.readerIndex() < endIndex) {
+                            network.addCellTower(CellTower.from(
+                                mcc, mnc, buf.readUnsignedMedium(), buf.readUnsignedInt(), buf.readUnsignedByte()));
                         }
                     } else {
                         position.set(Position.KEY_DRIVER_UNIQUE_ID, String.valueOf(buf.readUnsignedInt()));
