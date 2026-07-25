@@ -24,6 +24,7 @@ import org.traccar.helper.Parser;
 import org.traccar.helper.PatternBuilder;
 import org.traccar.helper.UnitsConverter;
 import org.traccar.model.CellTower;
+import org.traccar.model.Device;
 import org.traccar.model.Network;
 import org.traccar.model.Position;
 
@@ -101,7 +102,10 @@ public class StartekProtocolDecoder extends BaseProtocolDecoder {
     private String decodeAlarm(int value) {
         return switch (value) {
             case 1 -> Position.ALARM_SOS;
-            case 5, 6 -> Position.ALARM_DOOR;
+            // 5 = INT3 rising edge (Input3 active), 6 = INT3 falling edge (Input3 inactive).
+            // Used by EV wiring to signal driver-controlled state changes
+            // (headlight, turn signals, parking brake, gear position, etc.).
+            case 5, 6 -> Position.ALARM_DRIVER_BEHAVIOR;
             case 17 -> Position.ALARM_LOW_POWER;
             case 18 -> Position.ALARM_POWER_CUT;
             case 19 -> Position.ALARM_POWER_RESTORED;
@@ -152,6 +156,13 @@ public class StartekProtocolDecoder extends BaseProtocolDecoder {
         Position position = new Position(getProtocolName());
         position.setDeviceId(deviceSession.getDeviceId());
 
+        // Device with category starting with "ev" (e.g. "ev", "evcar", "evtruck") signals an EV.
+        // Several OBD slots are remapped to EV-specific attributes in the extended block below.
+        Device device = getCacheManager().getObject(Device.class, deviceSession.getDeviceId());
+        String category = device != null ? device.getCategory() : null;
+        boolean isEv = category != null && category.length() >= 2
+                && category.substring(0, 2).equalsIgnoreCase("ev");
+
         int event = parser.nextInt();
         String eventData = parser.next();
         position.set(Position.KEY_EVENT, event);
@@ -182,12 +193,16 @@ public class StartekProtocolDecoder extends BaseProtocolDecoder {
 
         int input = parser.nextHexInt();
         int output = parser.nextHexInt();
-        position.set(Position.KEY_IGNITION, BitUtil.check(input, 1));
-        position.set(Position.KEY_DOOR, BitUtil.check(input, 2));
+        boolean ignition = BitUtil.check(input, 1);
+        position.set(Position.KEY_IGNITION, ignition);
+        position.set("int3State", BitUtil.check(input, 2));
         position.set(Position.KEY_INPUT, input);
         position.set(Position.KEY_OUTPUT, output);
+        if (isEv) {
+            position.set(ignition ? "poweron" : "poweroff", true);
+        }
 
-        position.set(Position.KEY_POWER, parser.nextHexInt() / 100.0);
+        position.set(!isEv ? Position.KEY_POWER : "LV" , parser.nextHexInt() / 100.0);
         position.set(Position.KEY_BATTERY, parser.nextHexInt() / 100.0);
 
         if (parser.hasNext()) {
@@ -220,21 +235,119 @@ public class StartekProtocolDecoder extends BaseProtocolDecoder {
         }
 
         if (parser.hasNextAny(9)) {
+            // Slot 1: Motor RPM (same key for both ICE and EV)
             position.set(Position.KEY_RPM, parser.nextInt());
-            position.set(Position.KEY_ENGINE_LOAD, parser.nextInt());
-            position.set("airFlow", parser.nextInt());
-            position.set("airPressure", parser.nextInt());
-            if (parser.hasNext()) {
-                position.set("airTemp", parser.nextInt() - 40);
+
+            // Slot 2: ENGINE_LOAD / EV Battery Power (kW, signed ±100, precision 0.1)
+            //   HW sends raw = (actual_kW * 10) + 1000 so range is 0..2000 (bias +1000).
+            //   Server recovers actual = (raw - 1000) / 10.0.
+            Integer slot2 = parser.nextInt();
+            if (isEv) {
+                if (slot2 != null) {
+                    position.set("batteryPower", (slot2 - 1000) / 10.0);
+                }
+            } else {
+                position.set(Position.KEY_ENGINE_LOAD, slot2);
             }
-            position.set(Position.KEY_THROTTLE, parser.nextInt());
-            if (parser.hasNext()) {
-                position.set(Position.KEY_COOLANT_TEMP, parser.nextInt() - 40);
+
+            // Slot 3: MAF flow / EV Battery HV (V, precision 0.1 → raw = actual * 10)
+            Integer slot3 = parser.nextInt();
+            if (isEv) {
+                if (slot3 != null) {
+                    position.set("HV", slot3 / 10.0);
+                }
+            } else {
+                position.set("airFlow", slot3);
             }
-            if (parser.hasNext()) {
-                position.set(Position.KEY_FUEL_CONSUMPTION, parser.nextInt() / 10.0);
+
+            // Slot 4: Intake pressure / EV Remaining Power (kW)
+            Integer slot4 = parser.nextInt();
+            if (isEv) {
+                if (slot4 != null) {
+                    position.set("remainingPower", slot4);
+                }
+            } else {
+                position.set("airPressure", slot4);
             }
-            position.set(Position.KEY_FUEL, parser.nextInt());
+
+            // Slot 5: Intake temp (bias -40) / EV KEY_OBD_ODOMETER (when > 0)
+            if (parser.hasNext()) {
+                Integer slot5 = parser.nextInt();
+                if (isEv) {
+                    if (slot5 != null) {
+                        position.set(Position.KEY_OBD_ODOMETER, (long) slot5);
+                    }
+                } else {
+                    position.set("airTemp", slot5 - 40);
+                }
+            }
+
+            // Slot 6: Throttle / EV flags bitmask
+            //   bit 0 = charging, bit 1 = headlight, bit 2 = turn left,
+            //   bit 3 = turn right, bit 4 = parking brake, bit 5 = hazard,
+            //   bits 6-7 = gear (0=N, 1=D, 2=R, 3=reserved/unset)
+            // Boolean attributes are only set for bits that are 1 (active flags).
+            Integer slot6 = parser.nextInt();
+            if (isEv) {
+                if (slot6 != null) {
+                    int flags = slot6;
+                    if (BitUtil.check(flags, 0)) {
+                        position.set(Position.KEY_CHARGE, true);
+                    }
+                    if (BitUtil.check(flags, 1)) {
+                        position.set("headlight", true);
+                    }
+                    if (BitUtil.check(flags, 2)) {
+                        position.set("turnLeft", true);
+                    }
+                    if (BitUtil.check(flags, 3)) {
+                        position.set("turnRight", true);
+                    }
+                    if (BitUtil.check(flags, 4)) {
+                        position.set("parkingBrake", true);
+                    }
+                    if (BitUtil.check(flags, 5)) {
+                        position.set("hazard", true);
+                    }
+                    int gearCode = BitUtil.between(flags, 6, 8);
+                    switch (gearCode) {
+                        case 0 -> position.set("gearPositions", "N");
+                        case 1 -> position.set("gearPositions", "D");
+                        case 2 -> position.set("gearPositions", "R");
+                        default -> { /* 3 = reserved: leave gearPositions unset */ }
+                    }
+                }
+            } else {
+                position.set(Position.KEY_THROTTLE, slot6);
+            }
+
+            // Slot 7: Coolant temp / EV Battery Temp (both use -40 bias)
+            if (parser.hasNext()) {
+                int slot7 = parser.nextInt() - 40;
+                if (isEv) {
+                    position.set("batteryTemp", slot7);
+                } else {
+                    position.set(Position.KEY_COOLANT_TEMP, slot7);
+                }
+            }
+
+            // Slot 8: Instant fuel / EV Trip Consumption (kWh, cumulative from vehicle)
+            if (parser.hasNext()) {
+                int slot8 = parser.nextInt();
+                if (isEv) {
+                    position.set("powerConsumption", slot8);
+                } else {
+                    position.set(Position.KEY_FUEL_CONSUMPTION, slot8 / 10.0);
+                }
+            }
+
+            // Slot 9: Fuel level / EV SoC (%)
+            Integer slot9 = parser.nextInt();
+            if (isEv) {
+                position.set("soc", slot9);
+            } else {
+                position.set(Position.KEY_FUEL, slot9);
+            }
         }
 
         if (parser.hasNext()) {

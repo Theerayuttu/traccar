@@ -2,7 +2,15 @@ package org.traccar.protocol;
 
 import org.junit.jupiter.api.Test;
 import org.traccar.ProtocolTest;
+import org.traccar.config.Config;
+import org.traccar.model.Device;
 import org.traccar.model.Position;
+import org.traccar.session.cache.CacheManager;
+
+import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 public class StartekProtocolDecoderTest extends ProtocolTest {
 
@@ -66,8 +74,168 @@ public class StartekProtocolDecoderTest extends ProtocolTest {
                 "&&A147,021104023195429,000,0,,180106093046,A,22.646430,114.065730,8,0.9,54,86,76,326781,460|0|27B3|0EA7,27,0000000F,02,01,04E2|018C|01C8|0000,1,0104B0,01013D|02813546\r\n"));
 
         verifyPosition(decoder, text(
-                "&&y139,860262050009146,000,0,,210323131512,A,22.678655,114.046223,14,1.1,0,231,71,5,460|0|249F|0099C257,28,0000003D,00,00,0493|0199|0000|0000,1,,33\r\n"));
+                "&&y139,860262050009146,000,0,,210323131512,A,22.678655,114.046223,14,1.1,0,231,71,5,460|0|249F|000010C5,28,0000003D,00,00,0493|0199|0000|0000,1,,33\r\n"));
 
+    }
+
+    @Test
+    public void testDecodeEvIgnitionOn() throws Exception {
+
+        var decoder = injectEvDecoder("ev");
+
+        // Input hex 02 → bit 1 = 1 → ignition on → ALARM_POWER_ON.
+        // Slot 6 flags = 67 (0b01000011) → gear D (bits 6-7 = 01) + headlight + charging.
+        // OBD block (EV mapping):
+        //   RPM=3000, batteryPower raw=1500 → (1500-1000)/10 = 50.0 kW,
+        //   HV raw=4000 → 400.0 V, remainingPower=30, ODO=15234 (overrides main odo=925),
+        //   flags=67, batteryTemp raw=75 → 35°C, powerConsumption=12, SoC=85%.
+        String frame = "&&x164,868825064282040,000,0,,220705205955,A,33.326001,44.445318,10,1.2,0,57,8,"
+                + "925,418|40|038C|000083CD,31,00000015,02,00,0016|016A|0000|0000,1,,,"
+                + "3000|1500|4000|30|15234|67|75|12|85%FE\r\n";
+
+        verifyAttribute(decoder, text(frame), Position.KEY_RPM, 3000);
+        verifyAttribute(decoder, text(frame), "batteryPower", 50.0);
+        verifyAttribute(decoder, text(frame), "HV", 400.0);
+        verifyAttribute(decoder, text(frame), "remainingPower", 30);
+        verifyAttribute(decoder, text(frame), Position.KEY_OBD_ODOMETER, 15234L);
+        verifyAttribute(decoder, text(frame), "soc", 85);
+        verifyAttribute(decoder, text(frame), "batteryTemp", 35);
+        verifyAttribute(decoder, text(frame), "powerConsumption", 12);
+
+        // Slot 6 (flags=67) → bit0 charge, bit1 headlight, bits 6-7 = gear D.
+        verifyAttribute(decoder, text(frame), Position.KEY_CHARGE, true);
+        verifyAttribute(decoder, text(frame), "headlight", true);
+        verifyAttribute(decoder, text(frame), "gearPositions", "D");
+        verifyAttribute(decoder, text(frame), "turnLeft", null);
+        verifyAttribute(decoder, text(frame), "turnRight", null);
+        verifyAttribute(decoder, text(frame), "parkingBrake", null);
+        verifyAttribute(decoder, text(frame), "hazard", null);
+
+        // ICE keys must NOT be present for EV.
+        verifyAttribute(decoder, text(frame), Position.KEY_ENGINE_LOAD, null);
+        verifyAttribute(decoder, text(frame), Position.KEY_FUEL, null);
+        verifyAttribute(decoder, text(frame), Position.KEY_THROTTLE, null);
+        verifyAttribute(decoder, text(frame), Position.KEY_COOLANT_TEMP, null);
+        verifyAttribute(decoder, text(frame), Position.KEY_FUEL_CONSUMPTION, null);
+
+        verifyAttribute(decoder, text(frame), Position.KEY_IGNITION, true);
+        verifyAttribute(decoder, text(frame), "poweron", true);
+        verifyAttribute(decoder, text(frame), "poweroff", null);
+    }
+
+    @Test
+    public void testDecodeEvIgnitionOff() throws Exception {
+
+        var decoder = injectEvDecoder("evcar");
+
+        // input=00 → ignition off → ALARM_POWER_OFF.
+        // flags=0 → all boolean flags cleared, gearPositions="N" (bits 6-7 = 00).
+        // batteryPower raw=1000 → 0.0 kW (idle/parked).
+        String frame = "&&x164,868825064282040,000,0,,220705205955,A,33.326001,44.445318,10,1.2,0,57,8,"
+                + "925,418|40|038C|000083CD,31,00000015,00,00,0016|016A|0000|0000,1,,,"
+                + "3000|1000|4000|30|15234|0|75|12|85%FE\r\n";
+
+        verifyAttribute(decoder, text(frame), Position.KEY_IGNITION, false);
+        verifyAttribute(decoder, text(frame), "poweroff", true);
+        verifyAttribute(decoder, text(frame), "poweron", null);
+
+        verifyAttribute(decoder, text(frame), "batteryPower", 0.0);
+        verifyAttribute(decoder, text(frame), "gearPositions", "N");
+
+        verifyAttribute(decoder, text(frame), Position.KEY_CHARGE, null);
+        verifyAttribute(decoder, text(frame), "headlight", null);
+        verifyAttribute(decoder, text(frame), "turnLeft", null);
+        verifyAttribute(decoder, text(frame), "turnRight", null);
+        verifyAttribute(decoder, text(frame), "parkingBrake", null);
+        verifyAttribute(decoder, text(frame), "hazard", null);
+    }
+
+    @Test
+    public void testDecodeEvObdOdometerSeparateFromMain() throws Exception {
+
+        var decoder = injectEvDecoder("ev");
+
+        // EV slot 5 goes to KEY_OBD_ODOMETER — main KEY_ODOMETER (925) is never overwritten.
+        String frame = "&&x164,868825064282040,000,0,,220705205955,A,33.326001,44.445318,10,1.2,0,57,8,"
+                + "925,418|40|038C|000083CD,31,00000015,02,00,0016|016A|0000|0000,1,,,"
+                + "3000|1500|4000|30|15234|67|75|12|85%FE\r\n";
+
+        verifyAttribute(decoder, text(frame), Position.KEY_ODOMETER, 925L);
+        verifyAttribute(decoder, text(frame), Position.KEY_OBD_ODOMETER, 15234L);
+    }
+
+    @Test
+    public void testDecodeEvBatteryPowerRegen() throws Exception {
+
+        var decoder = injectEvDecoder("ev");
+
+        // batteryPower raw=700 → (700-1000)/10 = -30.0 kW (regenerative braking).
+        // flags=64 → gear D only.
+        String frame = "&&x164,868825064282040,000,0,,220705205955,A,33.326001,44.445318,10,1.2,3,180,8,"
+                + "925,418|40|038C|000083CD,31,00000015,02,00,0016|016A|0000|0000,1,,,"
+                + "3000|700|4000|30|15240|64|75|12|85%FE\r\n";
+
+        verifyAttribute(decoder, text(frame), "batteryPower", -30.0);
+        verifyAttribute(decoder, text(frame), "gearPositions", "D");
+    }
+
+    @Test
+    public void testDecodeEvGearReverseWithParkingBrake() throws Exception {
+
+        var decoder = injectEvDecoder("ev");
+
+        // flags=144 (0b10010000) → gear R (bits 6-7 = 10) + parkingBrake (bit 4).
+        String frame = "&&x164,868825064282040,000,0,,220705205955,A,33.326001,44.445318,10,1.2,0,0,8,"
+                + "925,418|40|038C|000083CD,31,00000015,02,00,0016|016A|0000|0000,1,,,"
+                + "0|1000|4000|0|15240|144|75|12|85%FE\r\n";
+
+        verifyAttribute(decoder, text(frame), "gearPositions", "R");
+        verifyAttribute(decoder, text(frame), "parkingBrake", true);
+        verifyAttribute(decoder, text(frame), Position.KEY_CHARGE, null);
+    }
+
+    @Test
+    public void testDecodeEvGearReservedNotSet() throws Exception {
+
+        var decoder = injectEvDecoder("ev");
+
+        // flags=192 (bits 6-7 = 11) → reserved gear code → gearPositions must NOT be set.
+        String frame = "&&x164,868825064282040,000,0,,220705205955,A,33.326001,44.445318,10,1.2,0,0,8,"
+                + "925,418|40|038C|000083CD,31,00000015,02,00,0016|016A|0000|0000,1,,,"
+                + "0|1000|4000|0|15240|192|75|12|85%FE\r\n";
+
+        verifyAttribute(decoder, text(frame), "gearPositions", null);
+    }
+
+    @Test
+    public void testDecodeInt3TriggerMapsToDriverBehavior() throws Exception {
+
+        // Event codes 5 (Input3 active) and 6 (Input3 inactive) — emitted by iStartek
+        // when INT3 is toggled (HW wiring for headlight / turn / parking brake / gear change).
+        // Both should now produce alarm = "driverBehavior", not "door".
+        var decoder = inject(new StartekProtocolDecoder(null));
+
+        String frameActive = "&&x164,868825064282040,000,5,,220705205955,A,33.326001,44.445318,10,1.2,0,0,8,"
+                + "925,418|40|038C|000083CD,31,00000015,02,00,0016|016A|0000|0000,1,,,"
+                + "0|0|0|0|0|0|75|0|85%FE\r\n";
+        verifyAttribute(decoder, text(frameActive), Position.KEY_ALARM, Position.ALARM_DRIVER_BEHAVIOR);
+
+        String frameInactive = "&&x164,868825064282040,000,6,,220705205955,A,33.326001,44.445318,10,1.2,0,0,8,"
+                + "925,418|40|038C|000083CD,31,00000015,00,00,0016|016A|0000|0000,1,,,"
+                + "0|0|0|0|0|0|75|0|85%FE\r\n";
+        verifyAttribute(decoder, text(frameInactive), Position.KEY_ALARM, Position.ALARM_DRIVER_BEHAVIOR);
+    }
+
+    private StartekProtocolDecoder injectEvDecoder(String category) throws Exception {
+        var decoder = inject(new StartekProtocolDecoder(null));
+        var evDevice = mock(Device.class);
+        when(evDevice.getId()).thenReturn(1L);
+        when(evDevice.getCategory()).thenReturn(category);
+        var cacheManager = mock(CacheManager.class);
+        when(cacheManager.getConfig()).thenReturn(new Config());
+        when(cacheManager.getObject(eq(Device.class), anyLong())).thenReturn(evDevice);
+        decoder.setCacheManager(cacheManager);
+        return decoder;
     }
 
 }
