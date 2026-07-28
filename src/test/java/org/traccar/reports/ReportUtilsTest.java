@@ -144,6 +144,95 @@ public class ReportUtilsTest extends BaseTest {
         assertEquals(20.0, reportUtils.calculateFuel(startPosition, endPosition, deviceWithCapacity), 0.01);
     }
 
+    private Position fuelPosition(double fuel) {
+        Position p = new Position();
+        p.set(Position.KEY_FUEL, fuel);
+        return p;
+    }
+
+    private ReportUtils fuelReportUtils() {
+        return new ReportUtils(
+                mock(Config.class), storage, mock(PermissionsService.class), mock(VelocityEngine.class), null);
+    }
+
+    @Test
+    public void testCalculateSpentFuelSegmentDetectsRefill() {
+        // Realistic day: drove 50L -> 35L, refill to 90L, drove to 78L. Total spent = 27L.
+        List<Position> positions = List.of(
+                fuelPosition(50),
+                fuelPosition(45),
+                fuelPosition(35),
+                fuelPosition(90),   // refill spike (delta +55 > threshold)
+                fuelPosition(85),
+                fuelPosition(78));
+        assertEquals(27.0, fuelReportUtils().calculateFuel(positions, mock(Device.class)), 0.01);
+    }
+
+    @Test
+    public void testCalculateSpentFuelIgnoresSensorNoise() {
+        // Real drop 50 -> 40 with jitter in between. Only endpoints matter for each segment.
+        List<Position> positions = List.of(
+                fuelPosition(50),
+                fuelPosition(52),   // jitter up (below refill threshold)
+                fuelPosition(49),
+                fuelPosition(51),
+                fuelPosition(48),
+                fuelPosition(40));
+        assertEquals(10.0, fuelReportUtils().calculateFuel(positions, mock(Device.class)), 0.01);
+    }
+
+    @Test
+    public void testCalculateSpentFuelMultipleRefills() {
+        // Two refills: 50 -> 30 (spent 20) + refill to 80 -> 60 (spent 20) + refill to 90 -> 70 (spent 20). Total 60.
+        List<Position> positions = List.of(
+                fuelPosition(50),
+                fuelPosition(30),
+                fuelPosition(80),   // refill 1
+                fuelPosition(60),
+                fuelPosition(90),   // refill 2
+                fuelPosition(70));
+        assertEquals(60.0, fuelReportUtils().calculateFuel(positions, mock(Device.class)), 0.01);
+    }
+
+    @Test
+    public void testCalculateSpentFuelClampsNegativeToZero() {
+        // Small unexplained rise below refill threshold should clamp to 0, not surface a negative.
+        List<Position> positions = List.of(fuelPosition(40), fuelPosition(43));
+        assertEquals(0.0, fuelReportUtils().calculateFuel(positions, mock(Device.class)), 0.01);
+    }
+
+    @Test
+    public void testCalculateSpentFuelTwoPointWrapperMatchesLegacyBehavior() {
+        // Normal drop: overload uses the same segment logic and returns the same result.
+        Position first = fuelPosition(0.7);
+        Position last = fuelPosition(0.5);
+        assertEquals(0.2, fuelReportUtils().calculateFuel(first, last, mock(Device.class)), 0.01);
+    }
+
+    @Test
+    public void testCalculateSpentFuelFuelUsedTakesPrecedence() {
+        // KEY_FUEL_USED (cumulative) bypasses segment logic; it is a monotonic counter.
+        Position first = new Position();
+        Position last = new Position();
+        first.set(Position.KEY_FUEL_USED, 10.0);
+        last.set(Position.KEY_FUEL_USED, 42.0);
+        assertEquals(32.0, fuelReportUtils().calculateFuel(List.of(first, last), mock(Device.class)), 0.01);
+    }
+
+    @Test
+    public void testCalculateSpentFuelLevelWithCapacityAppliesSegmenting() {
+        // 80% -> 40% via drops, then refill to 90%, then 70%. Percent spent 40 + 20 = 60% of 100L = 60L.
+        Position p1 = new Position(); p1.set(Position.KEY_FUEL_LEVEL, 80.0);
+        Position p2 = new Position(); p2.set(Position.KEY_FUEL_LEVEL, 60.0);
+        Position p3 = new Position(); p3.set(Position.KEY_FUEL_LEVEL, 40.0);
+        Position p4 = new Position(); p4.set(Position.KEY_FUEL_LEVEL, 90.0);   // refill
+        Position p5 = new Position(); p5.set(Position.KEY_FUEL_LEVEL, 70.0);
+        Device device = mock(Device.class);
+        when(device.hasAttribute(Keys.FUEL_CAPACITY.getKey())).thenReturn(true);
+        when(device.getDouble(Keys.FUEL_CAPACITY.getKey())).thenReturn(100.0);
+        assertEquals(60.0, fuelReportUtils().calculateFuel(List.of(p1, p2, p3, p4, p5), device), 0.01);
+    }
+
     private ReportUtils socReportUtils() {
         return new ReportUtils(
                 mock(Config.class), storage, mock(PermissionsService.class), mock(VelocityEngine.class), null);

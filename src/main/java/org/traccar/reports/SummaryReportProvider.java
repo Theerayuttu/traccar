@@ -99,12 +99,16 @@ public class SummaryReportProvider {
                     new AttributeUtil.StorageProvider(config, storage, permissionsService, device));
             boolean ignoreOdometer = tripsConfig.getIgnoreOdometer();
             result.setDistance(PositionUtil.calculateDistance(first, last, !ignoreOdometer));
-            result.setSpentFuel(reportUtils.calculateFuel(first, last, device));
-            // SoC uses the full position list (when available) so intermediate charging
-            // events are skipped via KEY_CHARGE. Falls back to 2-point when fast mode is on.
-            result.setSpentSoc(collectedPositions != null
-                    ? reportUtils.calculateSoc(collectedPositions, device)
-                    : reportUtils.calculateSoc(first, last, device));
+            // Full-list versions are used when we have the buffered positions so the segment-based
+            // fuel algorithm (refill detection) and the charge-aware SoC algorithm both apply.
+            // Fast mode only has the 2 edge positions available.
+            if (collectedPositions != null) {
+                result.setSpentFuel(reportUtils.calculateFuel(collectedPositions, device));
+                result.setSpentSoc(reportUtils.calculateSoc(collectedPositions, device));
+            } else {
+                result.setSpentFuel(reportUtils.calculateFuel(first, last, device));
+                result.setSpentSoc(reportUtils.calculateSoc(first, last, device));
+            }
 
             if (first.hasAttribute(Position.KEY_HOURS) && last.hasAttribute(Position.KEY_HOURS)) {
                 result.setStartHours(first.getLong(Position.KEY_HOURS));

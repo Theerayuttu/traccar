@@ -107,17 +107,70 @@ public class ReportUtils {
         }
     }
 
-    public double calculateFuel(Position first, Position last, Device device) {
+    // Positive jump in fuel level larger than this threshold between two
+    // consecutive samples is treated as a refill event (segment boundary).
+    private static final double FUEL_REFILL_THRESHOLD = 5.0;         // litres
+    private static final double FUEL_LEVEL_REFILL_THRESHOLD = 5.0;   // percent of tank
+
+    /**
+     * Calculate the fuel consumed between the first and last position of the provided list using
+     * a segment-based algorithm that is robust to both refill events and sensor noise:
+     *   - a sudden rise > threshold between two consecutive samples closes the current segment
+     *     and starts a new one from the refill value;
+     *   - within each segment consumption = start value - end value (mid-segment noise cancels
+     *     out because only the segment endpoints are used).
+     * Falls through to the cumulative KEY_FUEL_USED counter when both endpoints carry it, and
+     * scales KEY_FUEL_LEVEL (%) by the device capacity attribute.
+     */
+    public double calculateFuel(List<Position> positions, Device device) {
+        if (positions == null || positions.isEmpty()) {
+            return 0;
+        }
+        Position first = positions.get(0);
+        Position last = positions.get(positions.size() - 1);
+
         if (first.hasAttribute(Position.KEY_FUEL_USED) && last.hasAttribute(Position.KEY_FUEL_USED)) {
             return last.getDouble(Position.KEY_FUEL_USED) - first.getDouble(Position.KEY_FUEL_USED);
-        } else if (first.hasAttribute(Position.KEY_FUEL) && last.hasAttribute(Position.KEY_FUEL)) {
-            return first.getDouble(Position.KEY_FUEL) - last.getDouble(Position.KEY_FUEL);
-        } else if (first.hasAttribute(Position.KEY_FUEL_LEVEL) && last.hasAttribute(Position.KEY_FUEL_LEVEL)
+        }
+        if (first.hasAttribute(Position.KEY_FUEL) && last.hasAttribute(Position.KEY_FUEL)) {
+            return sumFuelSegments(positions, Position.KEY_FUEL, FUEL_REFILL_THRESHOLD);
+        }
+        if (first.hasAttribute(Position.KEY_FUEL_LEVEL) && last.hasAttribute(Position.KEY_FUEL_LEVEL)
                 && device.hasAttribute(Keys.FUEL_CAPACITY.getKey())) {
-            return ((first.getDouble(Position.KEY_FUEL_LEVEL) - last.getDouble(Position.KEY_FUEL_LEVEL)) / 100)
-                    * device.getDouble(Keys.FUEL_CAPACITY.getKey());
+            double percentSpent = sumFuelSegments(positions, Position.KEY_FUEL_LEVEL, FUEL_LEVEL_REFILL_THRESHOLD);
+            return (percentSpent / 100) * device.getDouble(Keys.FUEL_CAPACITY.getKey());
         }
         return 0;
+    }
+
+    public double calculateFuel(Position first, Position last, Device device) {
+        return calculateFuel(List.of(first, last), device);
+    }
+
+    private double sumFuelSegments(List<Position> positions, String key, double refillThreshold) {
+        double total = 0;
+        Double segmentStart = null;
+        Double lastValid = null;
+        for (Position curr : positions) {
+            if (!curr.hasAttribute(key)) {
+                continue;
+            }
+            double currValue = curr.getDouble(key);
+            if (segmentStart == null) {
+                segmentStart = currValue;
+            } else if (lastValid != null && currValue - lastValid > refillThreshold) {
+                // Refill detected between the previous valid sample and this one.
+                total += segmentStart - lastValid;
+                segmentStart = currValue;
+            }
+            lastValid = currValue;
+        }
+        if (segmentStart != null && lastValid != null) {
+            total += segmentStart - lastValid;
+        }
+        // "Spent" fuel is non-negative by definition; clamp so a small unhandled
+        // rise below the refill threshold does not produce a misleading negative.
+        return Math.max(0, total);
     }
 
     /**
