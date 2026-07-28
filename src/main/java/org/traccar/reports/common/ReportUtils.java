@@ -120,6 +120,35 @@ public class ReportUtils {
         return 0;
     }
 
+    /**
+     * Calculate the SoC (%) consumed between the first and last position of the provided list.
+     * Charging intervals (either endpoint has {@link Position#KEY_CHARGE} = true) are skipped;
+     * regen (negative delta while not charging) subtracts from the total. Returns 0 when neither
+     * endpoint has the "soc" attribute. Positive result = net consumption, negative = regen won.
+     */
+    public double calculateSoc(List<Position> positions, Device device) {
+        if (positions == null || positions.size() < 2) {
+            return 0;
+        }
+        double totalConsumed = 0;
+        for (int i = 1; i < positions.size(); i++) {
+            Position prev = positions.get(i - 1);
+            Position curr = positions.get(i);
+            if (!prev.hasAttribute("soc") || !curr.hasAttribute("soc")) {
+                continue;
+            }
+            if (prev.getBoolean(Position.KEY_CHARGE) || curr.getBoolean(Position.KEY_CHARGE)) {
+                continue;
+            }
+            totalConsumed += prev.getDouble("soc") - curr.getDouble("soc");
+        }
+        return totalConsumed;
+    }
+
+    public double calculateSoc(Position first, Position last, Device device) {
+        return calculateSoc(List.of(first, last), device);
+    }
+
     public String findDriver(Position firstPosition, Position lastPosition) {
         if (firstPosition.hasAttribute(Position.KEY_DRIVER_UNIQUE_ID)) {
             return firstPosition.getString(Position.KEY_DRIVER_UNIQUE_ID);
@@ -209,6 +238,7 @@ public class ReportUtils {
         }
         trip.setMaxSpeed(maxSpeed);
         trip.setSpentFuel(calculateFuel(startTrip, endTrip, device));
+        trip.setSpentSoc(calculateSoc(startTrip, endTrip, device));
 
         trip.setDriverUniqueId(findDriver(startTrip, endTrip));
         trip.setDriverName(findDriverName(trip.getDriverUniqueId()));
@@ -250,6 +280,7 @@ public class ReportUtils {
         long stopDuration = endStop.getFixTime().getTime() - startStop.getFixTime().getTime();
         stop.setDuration(stopDuration);
         stop.setSpentFuel(calculateFuel(startStop, endStop, device));
+        stop.setSpentSoc(calculateSoc(startStop, endStop, device));
 
         if (startStop.hasAttribute(Position.KEY_HOURS) && endStop.hasAttribute(Position.KEY_HOURS)) {
             stop.setEngineHours(endStop.getLong(Position.KEY_HOURS) - startStop.getLong(Position.KEY_HOURS));

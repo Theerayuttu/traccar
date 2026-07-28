@@ -73,10 +73,12 @@ public class SummaryReportProvider {
 
         Position first = null;
         Position last = null;
+        List<Position> collectedPositions = null;
         if (fast) {
             first = PositionUtil.getEdgePosition(storage, device.getId(), from, to, false);
             last = PositionUtil.getEdgePosition(storage, device.getId(), from, to, true);
         } else {
+            collectedPositions = new ArrayList<>();
             try (var positions = PositionUtil.getPositionsStream(storage, device.getId(), from, to, 0)) {
                 for (var iterator = positions.iterator(); iterator.hasNext();) {
                     Position position = iterator.next();
@@ -87,6 +89,7 @@ public class SummaryReportProvider {
                         result.setMaxSpeed(position.getSpeed());
                     }
                     last = position;
+                    collectedPositions.add(position);
                 }
             }
         }
@@ -97,6 +100,11 @@ public class SummaryReportProvider {
             boolean ignoreOdometer = tripsConfig.getIgnoreOdometer();
             result.setDistance(PositionUtil.calculateDistance(first, last, !ignoreOdometer));
             result.setSpentFuel(reportUtils.calculateFuel(first, last, device));
+            // SoC uses the full position list (when available) so intermediate charging
+            // events are skipped via KEY_CHARGE. Falls back to 2-point when fast mode is on.
+            result.setSpentSoc(collectedPositions != null
+                    ? reportUtils.calculateSoc(collectedPositions, device)
+                    : reportUtils.calculateSoc(first, last, device));
 
             if (first.hasAttribute(Position.KEY_HOURS) && last.hasAttribute(Position.KEY_HOURS)) {
                 result.setStartHours(first.getLong(Position.KEY_HOURS));

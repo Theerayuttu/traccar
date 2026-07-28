@@ -84,6 +84,16 @@ public class BaseReportItem {
         this.spentFuel = spentFuel;
     }
 
+    private double spentSoc;
+
+    public double getSpentSoc() {
+        return spentSoc;
+    }
+
+    public void setSpentSoc(double spentSoc) {
+        this.spentSoc = spentSoc;
+    }
+
     private double startOdometer;
 
     public double getStartOdometer() {

@@ -144,6 +144,86 @@ public class ReportUtilsTest extends BaseTest {
         assertEquals(20.0, reportUtils.calculateFuel(startPosition, endPosition, deviceWithCapacity), 0.01);
     }
 
+    private ReportUtils socReportUtils() {
+        return new ReportUtils(
+                mock(Config.class), storage, mock(PermissionsService.class), mock(VelocityEngine.class), null);
+    }
+
+    private Position socPosition(double soc, boolean charging) {
+        Position p = new Position();
+        p.set("soc", soc);
+        p.set(Position.KEY_CHARGE, charging);
+        return p;
+    }
+
+    @Test
+    public void testCalculateSpentSocWithNoSocData() {
+        Position first = new Position();
+        Position last = new Position();
+        assertEquals(0.0, socReportUtils().calculateSoc(first, last, mock(Device.class)), 0.01);
+    }
+
+    @Test
+    public void testCalculateSpentSocTwoPointDrop() {
+        // Simple drive: 85% -> 60%, no charging -> spent = 25.
+        Position first = socPosition(85, false);
+        Position last = socPosition(60, false);
+        assertEquals(25.0, socReportUtils().calculateSoc(first, last, mock(Device.class)), 0.01);
+    }
+
+    @Test
+    public void testCalculateSpentSocSkipsWhenEitherEndpointCharging() {
+        // Charging interval must be skipped -> spent = 0.
+        Position charging = socPosition(60, true);
+        Position after = socPosition(90, false);   // SoC rose during charge but skipped
+        assertEquals(0.0, socReportUtils().calculateSoc(charging, after, mock(Device.class)), 0.01);
+    }
+
+    @Test
+    public void testCalculateSpentSocRegenReducesTotal() {
+        // Full drive day with a regen segment lowering the total consumption.
+        // Positions: 85 -> 75 -> 65 -> 70 (regen +5) -> 60 = net 25.
+        List<Position> positions = List.of(
+                socPosition(85, false),
+                socPosition(75, false),
+                socPosition(65, false),
+                socPosition(70, false),   // regen: delta -5 subtracts from total
+                socPosition(60, false));
+        assertEquals(25.0, socReportUtils().calculateSoc(positions, mock(Device.class)), 0.01);
+    }
+
+    @Test
+    public void testCalculateSpentSocFullDayWithChargingAndRegen() {
+        // Realistic day:
+        //   drive 85 -> 65 (spent 20)
+        //   regen 65 -> 70 (-5 saved)
+        //   drive 70 -> 60 (spent 10)   -> subtotal so far: 25
+        //   charging 60 -> 75 -> 90     (skipped intervals)
+        //   transition 90 (charge=false)  (skipped: prev endpoint was charging)
+        //   drive 90 -> 80 -> 70 (spent 20)
+        // Expected total: 45.
+        List<Position> positions = List.of(
+                socPosition(85, false),
+                socPosition(75, false),
+                socPosition(65, false),
+                socPosition(70, false),
+                socPosition(60, false),
+                socPosition(60, true),
+                socPosition(75, true),
+                socPosition(90, true),
+                socPosition(90, false),
+                socPosition(80, false),
+                socPosition(70, false));
+        assertEquals(45.0, socReportUtils().calculateSoc(positions, mock(Device.class)), 0.01);
+    }
+
+    @Test
+    public void testCalculateSpentSocEmptyOrSingleReturnsZero() {
+        ReportUtils reportUtils = socReportUtils();
+        assertEquals(0.0, reportUtils.calculateSoc(List.of(), mock(Device.class)), 0.01);
+        assertEquals(0.0, reportUtils.calculateSoc(List.of(socPosition(85, false)), mock(Device.class)), 0.01);
+    }
+
     @Test
     public void testDetectTripsSimple() throws Exception {
 
