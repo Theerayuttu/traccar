@@ -108,9 +108,12 @@ public class ReportUtils {
     }
 
     // Positive jump in fuel level larger than this threshold between two
-    // consecutive samples is treated as a refill event (segment boundary).
-    private static final double FUEL_REFILL_THRESHOLD = 5.0;         // litres
-    private static final double FUEL_LEVEL_REFILL_THRESHOLD = 5.0;   // percent of tank
+    // consecutive samples is treated as a candidate refill event; it is only
+    // accepted after REFILL_CONFIRM_SAMPLES further samples stay near the new
+    // level (rejecting transient sensor spikes).
+    private static final double FUEL_REFILL_THRESHOLD = 10.0;        // litres
+    private static final double FUEL_LEVEL_REFILL_THRESHOLD = 10.0;  // percent of tank
+    private static final int REFILL_CONFIRM_SAMPLES = 10;
 
     /**
      * Calculate the fuel consumed between the first and last position of the provided list using
@@ -151,15 +154,17 @@ public class ReportUtils {
         double total = 0;
         Double segmentStart = null;
         Double lastValid = null;
-        for (Position curr : positions) {
+        for (int i = 0; i < positions.size(); i++) {
+            Position curr = positions.get(i);
             if (!curr.hasAttribute(key)) {
                 continue;
             }
             double currValue = curr.getDouble(key);
             if (segmentStart == null) {
                 segmentStart = currValue;
-            } else if (lastValid != null && currValue - lastValid > refillThreshold) {
-                // Refill detected between the previous valid sample and this one.
+            } else if (lastValid != null && currValue - lastValid > refillThreshold
+                    && isRefillConfirmed(positions, i, key, currValue, refillThreshold)) {
+                // Refill detected AND confirmed by look-ahead persistence check.
                 total += segmentStart - lastValid;
                 segmentStart = currValue;
             }
@@ -171,6 +176,30 @@ public class ReportUtils {
         // "Spent" fuel is non-negative by definition; clamp so a small unhandled
         // rise below the refill threshold does not produce a misleading negative.
         return Math.max(0, total);
+    }
+
+    /**
+     * Confirm that a candidate refill spike at {@code spikeIndex} is real by requiring the
+     * following {@link #REFILL_CONFIRM_SAMPLES} valid samples to stay within {@code threshold}
+     * of the new level. Transient sensor spikes (up-then-down) fail this check and are ignored.
+     */
+    private boolean isRefillConfirmed(
+            List<Position> positions, int spikeIndex, String key, double spikeValue, double threshold) {
+        int confirmed = 0;
+        for (int j = spikeIndex + 1; j < positions.size(); j++) {
+            Position next = positions.get(j);
+            if (!next.hasAttribute(key)) {
+                continue;
+            }
+            if (next.getDouble(key) < spikeValue - threshold) {
+                return false;
+            }
+            confirmed++;
+            if (confirmed >= REFILL_CONFIRM_SAMPLES) {
+                return true;
+            }
+        }
+        return confirmed >= REFILL_CONFIRM_SAMPLES;
     }
 
     /**
