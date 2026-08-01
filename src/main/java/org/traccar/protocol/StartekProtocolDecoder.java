@@ -195,7 +195,7 @@ public class StartekProtocolDecoder extends BaseProtocolDecoder {
         int output = parser.nextHexInt();
         boolean ignition = BitUtil.check(input, 1);
         position.set(Position.KEY_IGNITION, ignition);
-        position.set("int3State", BitUtil.check(input, 2));
+        position.set("int3", BitUtil.check(input, 2));
         position.set(Position.KEY_INPUT, input);
         position.set(Position.KEY_OUTPUT, output);
         if (isEv) {
