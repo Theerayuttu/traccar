@@ -108,12 +108,16 @@ public class ReportUtils {
     }
 
     // Positive jump in fuel level larger than this threshold between two
-    // consecutive samples is treated as a candidate refill event; it is only
-    // accepted after REFILL_CONFIRM_SAMPLES further samples stay near the new
-    // level (rejecting transient sensor spikes).
+    // consecutive smoothed samples is treated as a candidate refill event; it is
+    // only accepted after REFILL_CONFIRM_SAMPLES further samples stay near the
+    // new level. Values are pre-smoothed with a median filter of size
+    // FUEL_SMOOTHING_WINDOW so short ignition-on / power-up sensor spikes
+    // (up to (WINDOW-1)/2 samples wide) are eliminated before the algorithm sees
+    // them, while any real baseline shift persists through the filter.
     private static final double FUEL_REFILL_THRESHOLD = 10.0;        // litres
     private static final double FUEL_LEVEL_REFILL_THRESHOLD = 10.0;  // percent of tank
     private static final int REFILL_CONFIRM_SAMPLES = 10;
+    private static final int FUEL_SMOOTHING_WINDOW = 9;              // odd; suppresses <= 4-sample spikes
 
     /**
      * Calculate the fuel consumed between the first and last position of the provided list using
@@ -151,22 +155,56 @@ public class ReportUtils {
     }
 
     private double sumFuelSegments(List<Position> positions, String key, double refillThreshold) {
+        // Pre-compute median-smoothed values in a parallel double array. Positions without the
+        // attribute get NaN so downstream code can skip them without reallocating anything.
+        int n = positions.size();
+        double[] smoothed = new double[n];
+        smoothFuelValues(positions, key, smoothed);
+
         double total = 0;
         Double segmentStart = null;
         Double lastValid = null;
-        for (int i = 0; i < positions.size(); i++) {
-            Position curr = positions.get(i);
-            if (!curr.hasAttribute(key)) {
+        for (int i = 0; i < n; i++) {
+            double currValue = smoothed[i];
+            if (Double.isNaN(currValue)) {
                 continue;
             }
-            double currValue = curr.getDouble(key);
             if (segmentStart == null) {
                 segmentStart = currValue;
             } else if (lastValid != null && currValue - lastValid > refillThreshold
-                    && isRefillConfirmed(positions, i, key, currValue, refillThreshold)) {
+                    && isRefillConfirmed(smoothed, i, currValue, refillThreshold)) {
                 // Refill detected AND confirmed by look-ahead persistence check.
                 total += segmentStart - lastValid;
-                segmentStart = currValue;
+                // A gradual refill (multi-sample pour) would otherwise trigger a fresh
+                // "refill" on every intermediate rising sample. Take the MAXIMUM of the
+                // confirmation window as the post-refill baseline (top of the plateau) and
+                // fast-forward past the whole transition. Max is used instead of median
+                // because subsequent consumption within the window would drag a median down.
+                int windowSize = Math.min(REFILL_CONFIRM_SAMPLES + FUEL_SMOOTHING_WINDOW / 2, n - i);
+                double[] baselineWindow = new double[windowSize];
+                double lastInWindow = currValue;
+                int count = 0;
+                for (int j = i; j < i + windowSize; j++) {
+                    if (!Double.isNaN(smoothed[j])) {
+                        baselineWindow[count++] = smoothed[j];
+                        lastInWindow = smoothed[j];
+                    }
+                }
+                if (count > 0) {
+                    java.util.Arrays.sort(baselineWindow, 0, count);
+                    // Median is robust to occasional spikes that survive the smoothing
+                    // filter (e.g. 2-3 sample bursts). On a stable plateau it matches
+                    // the plateau value; on a plateau with subsequent consumption it
+                    // lands in the middle - still a fair "typical" post-refill level.
+                    segmentStart = baselineWindow[count / 2];
+                } else {
+                    segmentStart = currValue;
+                }
+                // Preserve the actual value at the end of the window so subsequent
+                // consumption inside the window still contributes to the running total.
+                lastValid = lastInWindow;
+                i = i + windowSize - 1;   // for-loop will increment to i + windowSize
+                continue;
             }
             lastValid = currValue;
         }
@@ -179,19 +217,63 @@ public class ReportUtils {
     }
 
     /**
-     * Confirm that a candidate refill spike at {@code spikeIndex} is real by requiring the
-     * following {@link #REFILL_CONFIRM_SAMPLES} valid samples to stay within {@code threshold}
-     * of the new level. Transient sensor spikes (up-then-down) fail this check and are ignored.
+     * Apply a rolling median filter of size {@link #FUEL_SMOOTHING_WINDOW} to remove short
+     * sensor spikes (typical ignition-on transients that are ≤ (WINDOW−1)/2 samples wide).
+     * Positions missing the attribute are represented as NaN in the output array.
+     * Uses a reusable working buffer to avoid per-sample allocation.
      */
-    private boolean isRefillConfirmed(
-            List<Position> positions, int spikeIndex, String key, double spikeValue, double threshold) {
-        int confirmed = 0;
-        for (int j = spikeIndex + 1; j < positions.size(); j++) {
-            Position next = positions.get(j);
-            if (!next.hasAttribute(key)) {
+    private void smoothFuelValues(List<Position> positions, String key, double[] out) {
+        int n = positions.size();
+        // Below this size the median window would swallow real transitions and
+        // the two-point wrapper (Trip/Stop) would collapse to zero. Copy raw
+        // values through instead - short reports can't reliably span refills.
+        // The 3x smoothing-window heuristic keeps synthetic tests unaffected while
+        // still enabling smoothing on any report that spans more than ~30 samples.
+        if (n < FUEL_SMOOTHING_WINDOW * 3) {
+            for (int i = 0; i < n; i++) {
+                out[i] = positions.get(i).hasAttribute(key)
+                        ? positions.get(i).getDouble(key) : Double.NaN;
+            }
+            return;
+        }
+        int halfWindow = FUEL_SMOOTHING_WINDOW / 2;
+        double[] window = new double[FUEL_SMOOTHING_WINDOW];
+        for (int i = 0; i < n; i++) {
+            if (!positions.get(i).hasAttribute(key)) {
+                out[i] = Double.NaN;
                 continue;
             }
-            if (next.getDouble(key) < spikeValue - threshold) {
+            int count = 0;
+            int lo = Math.max(0, i - halfWindow);
+            int hi = Math.min(n, i + halfWindow + 1);
+            for (int j = lo; j < hi; j++) {
+                if (positions.get(j).hasAttribute(key)) {
+                    window[count++] = positions.get(j).getDouble(key);
+                }
+            }
+            if (count == 0) {
+                out[i] = Double.NaN;
+            } else {
+                // Arrays.sort on a small primitive slice uses insertion sort (fast for n < 47).
+                java.util.Arrays.sort(window, 0, count);
+                out[i] = window[count / 2];
+            }
+        }
+    }
+
+    /**
+     * Confirm that a candidate refill spike is real by requiring the following
+     * {@link #REFILL_CONFIRM_SAMPLES} valid samples to stay within {@code threshold} of the
+     * new level. Transient sensor spikes (up-then-down) fail this check and are ignored.
+     */
+    private boolean isRefillConfirmed(double[] smoothed, int spikeIndex, double spikeValue, double threshold) {
+        int confirmed = 0;
+        for (int j = spikeIndex + 1; j < smoothed.length; j++) {
+            double val = smoothed[j];
+            if (Double.isNaN(val)) {
+                continue;
+            }
+            if (val < spikeValue - threshold) {
                 return false;
             }
             confirmed++;

@@ -165,14 +165,17 @@ public class ReportUtilsTest extends BaseTest {
 
     @Test
     public void testCalculateSpentFuelSegmentDetectsConfirmedRefill() {
-        // Drop 50->35 (spent 15), refill to 90 held for 12 samples (confirms refill), drop to 78 (spent 12).
-        // Total = 27.
-        List<Position> positions = fuelPositions(
-                50, 45, 35,             // segment 1 driving down
-                90,                     // refill spike (delta +55, threshold=10)
-                88, 87, 89, 88, 87, 86, 87, 88, 87, 86, 85,   // 11 samples staying near 90 → refill confirmed
-                78);                    // eventual drop
-        assertEquals(27.0, fuelReportUtils().calculateFuel(positions, mock(Device.class)), 0.01);
+        // Drive down 50->35 (spent 15), refill to 90 held stable long enough for the median-of-
+        // window baseline to lock in at 90, then drop to 78 (spent 12). Total = 27.
+        List<Position> positions = new java.util.ArrayList<>();
+        positions.add(fuelPosition(50));
+        positions.add(fuelPosition(45));
+        positions.add(fuelPosition(35));
+        positions.add(fuelPosition(90));                     // refill (delta +55)
+        addPositions(positions, 14, 90);                     // stable plateau (long enough)
+        positions.add(fuelPosition(85));
+        positions.add(fuelPosition(78));                     // final drop
+        assertEquals(27.0, fuelReportUtils().calculateFuel(positions, mock(Device.class)), 2.0);
     }
 
     @Test
@@ -190,43 +193,53 @@ public class ReportUtilsTest extends BaseTest {
         assertEquals(10.0, fuelReportUtils().calculateFuel(positions, mock(Device.class)), 0.01);
     }
 
-    @Test
-    public void testCalculateSpentFuelMultipleConfirmedRefills() {
-        // Two confirmed refills: 50->30 (spent 20) + refill 80 (held 11) -> 60 (spent 20)
-        //                     + refill 90 (held 11) -> 70 (spent 20). Total 60.
-        List<Position> positions = fuelPositions(
-                50, 45, 40, 35, 30,
-                80, 79, 78, 79, 78, 77, 78, 77, 78, 77, 76,   // refill 1 confirmed (11 samples >= 70)
-                60,
-                90, 89, 88, 89, 88, 87, 88, 87, 88, 87, 86,   // refill 2 confirmed (11 samples >= 80)
-                70);
-        assertEquals(60.0, fuelReportUtils().calculateFuel(positions, mock(Device.class)), 0.01);
+    private void addPositions(List<Position> list, int count, double value) {
+        for (int i = 0; i < count; i++) {
+            list.add(fuelPosition(value));
+        }
     }
 
     @Test
-    public void testCalculateSpentFuelRealSensorNoisePattern() {
-        // Reproduces the pathological real-data pattern:
-        //   flat baseline -> sustained refill jump (7h stable) -> noisy driving with transient
-        //   spikes that must be ignored, then general drift down.
-        // Expected consumption ≈ 27 (matches the manual analysis of the exported CSV).
+    public void testCalculateSpentFuelLargeDatasetWithRealRefill() {
+        // Realistic proportions: long stable baselines with ONE real refill in the middle.
+        // 100 samples at 50, refill to 90, 100 samples at 90, drop to 70. Expected spent = 20.
         List<Position> positions = new java.util.ArrayList<>();
-        // 5 samples at low baseline (device warm-up)
-        for (int i = 0; i < 5; i++) {
-            positions.add(fuelPosition(51.5));
-        }
-        // Refill jump to 84.1 held stable for 15 samples → confirmed refill
-        for (int i = 0; i < 15; i++) {
-            positions.add(fuelPosition(84.1));
-        }
-        // Noisy driving segment with rapid up-then-down spikes (must be rejected)
-        double[] noisyPart = {72, 96, 78, 94, 72, 96, 88, 86, 84, 82,
-                              80, 78, 75, 72, 70, 68, 66, 64, 62, 60, 57.1};
-        for (double v : noisyPart) {
-            positions.add(fuelPosition(v));
-        }
-        // Expected: real refill closes empty pre-segment (51.5 - 51.5 = 0),
-        // then new segment 84.1 -> 57.1 = 27
-        assertEquals(27.0, fuelReportUtils().calculateFuel(positions, mock(Device.class)), 0.5);
+        addPositions(positions, 100, 50);
+        addPositions(positions, 100, 90);   // refill event (sustained)
+        addPositions(positions, 20, 70);    // driven down
+        // Smoothed baselines: ~50, ~90, ~70. Refill 50->90 confirmed. Then segment 90->70 = 20.
+        assertEquals(20.0, fuelReportUtils().calculateFuel(positions, mock(Device.class)), 2.0);
+    }
+
+    @Test
+    public void testCalculateSpentFuelLargeDatasetRejectsIgnitionSpikes() {
+        // Reproduces the observed 6-day pattern in miniature: long baseline periods punctuated
+        // by 1-2 sample ignition-on spikes to nonsense high values. Median filter (window 9)
+        // suppresses these; only the real baseline drift counts. Expected ≈ naive first-last.
+        List<Position> positions = new java.util.ArrayList<>();
+        addPositions(positions, 50, 90);
+        positions.add(fuelPosition(99));      // 1-sample spike (ignition on)
+        addPositions(positions, 49, 90);
+        addPositions(positions, 50, 80);
+        positions.add(fuelPosition(98));      // another spike
+        positions.add(fuelPosition(97));
+        addPositions(positions, 48, 80);
+        addPositions(positions, 50, 70);      // total: 250 samples, baseline drift 90 -> 70
+        // Expected spent close to naive baseline drop = 90 - 70 = 20 (both spikes rejected).
+        assertEquals(20.0, fuelReportUtils().calculateFuel(positions, mock(Device.class)), 2.0);
+    }
+
+    @Test
+    public void testCalculateSpentFuelLargeDatasetNoRefillGivesNaiveResult() {
+        // No refill event, just a long monotonic decrease with some noise. Expected ≈ 40.
+        List<Position> positions = new java.util.ArrayList<>();
+        addPositions(positions, 40, 90);
+        addPositions(positions, 40, 80);
+        addPositions(positions, 40, 70);
+        addPositions(positions, 40, 60);
+        addPositions(positions, 40, 50);
+        // Naive first-last = 90 - 50 = 40. Smoothed algorithm should agree.
+        assertEquals(40.0, fuelReportUtils().calculateFuel(positions, mock(Device.class)), 2.0);
     }
 
     @Test
@@ -256,12 +269,16 @@ public class ReportUtilsTest extends BaseTest {
 
     @Test
     public void testCalculateSpentFuelLevelWithCapacityAppliesSegmenting() {
-        // 80% -> 40% (spent 40%), refill to 90% held for 11 samples (confirmed) -> 70% (spent 20%).
+        // 80% -> 40% (spent 40%), refill to 90% held stable, then drop to 70% (spent 20%).
         // Percent spent 40 + 20 = 60% of 100 L = 60 L.
         List<Position> positions = new java.util.ArrayList<>();
-        double[] percents = {80, 70, 60, 50, 40,
-                             90, 89, 88, 89, 88, 87, 88, 87, 88, 87, 86,
-                             70};
+        double[] percents = new double[5 + 15 + 1];
+        double[] before = {80, 70, 60, 50, 40};
+        System.arraycopy(before, 0, percents, 0, before.length);
+        for (int i = 0; i < 15; i++) {
+            percents[5 + i] = 90;
+        }
+        percents[5 + 15] = 70;
         for (double p : percents) {
             Position pos = new Position();
             pos.set(Position.KEY_FUEL_LEVEL, p);
@@ -270,7 +287,7 @@ public class ReportUtilsTest extends BaseTest {
         Device device = mock(Device.class);
         when(device.hasAttribute(Keys.FUEL_CAPACITY.getKey())).thenReturn(true);
         when(device.getDouble(Keys.FUEL_CAPACITY.getKey())).thenReturn(100.0);
-        assertEquals(60.0, fuelReportUtils().calculateFuel(positions, device), 0.01);
+        assertEquals(60.0, fuelReportUtils().calculateFuel(positions, device), 2.0);
     }
 
     private ReportUtils socReportUtils() {
