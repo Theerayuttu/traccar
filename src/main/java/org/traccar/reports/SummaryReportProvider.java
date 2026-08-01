@@ -40,7 +40,6 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.file.Paths;
-import java.time.Duration;
 import java.time.ZonedDateTime;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
@@ -65,32 +64,31 @@ public class SummaryReportProvider {
     }
 
     private Collection<SummaryReportItem> calculateDeviceResult(
-            Device device, Date from, Date to, boolean fast) throws StorageException {
+            Device device, Date from, Date to) throws StorageException {
 
         SummaryReportItem result = new SummaryReportItem();
         result.setDeviceId(device.getId());
         result.setDeviceName(device.getName());
 
+        // Always stream the full position set for the period. The previous edge-only "fast"
+        // path returned first/last positions only, which made maxSpeed = 0 and collapsed
+        // spentFuel / spentSoc to the two-point wrapper - refill detection and smoothing were
+        // impossible without intermediate samples. Memory is bounded by the storage layer via
+        // report.maxPositions (added upstream), so unconditional streaming is safe.
         Position first = null;
         Position last = null;
-        List<Position> collectedPositions = null;
-        if (fast) {
-            first = PositionUtil.getEdgePosition(storage, device.getId(), from, to, false);
-            last = PositionUtil.getEdgePosition(storage, device.getId(), from, to, true);
-        } else {
-            collectedPositions = new ArrayList<>();
-            try (var positions = PositionUtil.getPositionsStream(storage, device.getId(), from, to, 0)) {
-                for (var iterator = positions.iterator(); iterator.hasNext();) {
-                    Position position = iterator.next();
-                    if (first == null) {
-                        first = position;
-                    }
-                    if (position.getSpeed() > result.getMaxSpeed()) {
-                        result.setMaxSpeed(position.getSpeed());
-                    }
-                    last = position;
-                    collectedPositions.add(position);
+        List<Position> collectedPositions = new ArrayList<>();
+        try (var positions = PositionUtil.getPositionsStream(storage, device.getId(), from, to, 0)) {
+            for (var iterator = positions.iterator(); iterator.hasNext();) {
+                Position position = iterator.next();
+                if (first == null) {
+                    first = position;
                 }
+                if (position.getSpeed() > result.getMaxSpeed()) {
+                    result.setMaxSpeed(position.getSpeed());
+                }
+                last = position;
+                collectedPositions.add(position);
             }
         }
 
@@ -99,16 +97,8 @@ public class SummaryReportProvider {
                     new AttributeUtil.StorageProvider(config, storage, permissionsService, device));
             boolean ignoreOdometer = tripsConfig.getIgnoreOdometer();
             result.setDistance(PositionUtil.calculateDistance(first, last, !ignoreOdometer));
-            // Full-list versions are used when we have the buffered positions so the segment-based
-            // fuel algorithm (refill detection) and the charge-aware SoC algorithm both apply.
-            // Fast mode only has the 2 edge positions available.
-            if (collectedPositions != null) {
-                result.setSpentFuel(reportUtils.calculateFuel(collectedPositions, device));
-                result.setSpentSoc(reportUtils.calculateSoc(collectedPositions, device));
-            } else {
-                result.setSpentFuel(reportUtils.calculateFuel(first, last, device));
-                result.setSpentSoc(reportUtils.calculateSoc(first, last, device));
-            }
+            result.setSpentFuel(reportUtils.calculateFuel(collectedPositions, device));
+            result.setSpentSoc(reportUtils.calculateSoc(collectedPositions, device));
 
             if (first.hasAttribute(Position.KEY_HOURS) && last.hasAttribute(Position.KEY_HOURS)) {
                 result.setStartHours(first.getLong(Position.KEY_HOURS));
@@ -144,18 +134,17 @@ public class SummaryReportProvider {
     private Collection<SummaryReportItem> calculateDeviceResults(
             Device device, ZonedDateTime from, ZonedDateTime to, boolean daily) throws StorageException {
 
-        boolean fast = Duration.between(from, to).toSeconds() > config.getLong(Keys.REPORT_FAST_THRESHOLD);
         var results = new ArrayList<SummaryReportItem>();
         if (daily) {
             while (from.truncatedTo(ChronoUnit.DAYS).isBefore(to.truncatedTo(ChronoUnit.DAYS))) {
-                ZonedDateTime fromDay = from.truncatedTo(ChronoUnit.DAYS);
-                ZonedDateTime nextDay = fromDay.plusDays(1);
+                ZonedDateTime nextDay = from.truncatedTo(ChronoUnit.DAYS).plusDays(1);
                 results.addAll(calculateDeviceResult(
-                        device, Date.from(from.toInstant()), Date.from(nextDay.toInstant()), fast));
+                        device, Date.from(from.toInstant()), Date.from(nextDay.toInstant())));
                 from = nextDay;
             }
         }
-        results.addAll(calculateDeviceResult(device, Date.from(from.toInstant()), Date.from(to.toInstant()), fast));
+        results.addAll(calculateDeviceResult(
+                device, Date.from(from.toInstant()), Date.from(to.toInstant())));
         return results;
     }
 
