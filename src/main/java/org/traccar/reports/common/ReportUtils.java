@@ -107,16 +107,20 @@ public class ReportUtils {
         }
     }
 
-    // Positive jump in fuel level larger than this threshold between two
-    // consecutive smoothed samples is treated as a candidate refill event; it is
-    // only accepted after REFILL_CONFIRM_SAMPLES further samples stay near the
-    // new level. Values are pre-smoothed with a median filter of size
+    // Cumulative rise (current sample vs minimum in the previous
+    // REFILL_LOOKBACK_SAMPLES) larger than this threshold is treated as a
+    // candidate refill event; it is only accepted after
+    // REFILL_CONFIRM_SAMPLES further samples stay near the new level.
+    // Values are pre-smoothed with a median filter of size
     // FUEL_SMOOTHING_WINDOW so short ignition-on / power-up sensor spikes
     // (up to (WINDOW-1)/2 samples wide) are eliminated before the algorithm sees
     // them, while any real baseline shift persists through the filter.
+    // Lookback lets us catch slow refills that arrive as a stair of small
+    // sub-threshold steps (e.g. +3 per sample over 8 samples).
     private static final double FUEL_REFILL_THRESHOLD = 10.0;        // litres
     private static final double FUEL_LEVEL_REFILL_THRESHOLD = 10.0;  // percent of tank
     private static final int REFILL_CONFIRM_SAMPLES = 10;
+    private static final int REFILL_LOOKBACK_SAMPLES = 8;
     private static final int FUEL_SMOOTHING_WINDOW = 9;              // odd; suppresses <= 4-sample spikes
 
     /**
@@ -163,6 +167,7 @@ public class ReportUtils {
 
         double total = 0;
         Double segmentStart = null;
+        int segmentStartIndex = -1;
         Double lastValid = null;
         for (int i = 0; i < n; i++) {
             double currValue = smoothed[i];
@@ -171,15 +176,30 @@ public class ReportUtils {
             }
             if (segmentStart == null) {
                 segmentStart = currValue;
-            } else if (lastValid != null && currValue - lastValid > refillThreshold
+                segmentStartIndex = i;
+                lastValid = currValue;
+                continue;
+            }
+            // Compare against the minimum of the previous REFILL_LOOKBACK_SAMPLES
+            // (bounded by the current segment start) rather than just the immediately
+            // previous sample. This catches slow refills that arrive as a stair of
+            // small sub-threshold rises (e.g. +3 per sample for 8 samples).
+            int lookbackStart = Math.max(segmentStartIndex, i - REFILL_LOOKBACK_SAMPLES);
+            double minInLookback = Double.POSITIVE_INFINITY;
+            for (int j = lookbackStart; j < i; j++) {
+                if (!Double.isNaN(smoothed[j]) && smoothed[j] < minInLookback) {
+                    minInLookback = smoothed[j];
+                }
+            }
+            if (minInLookback != Double.POSITIVE_INFINITY
+                    && currValue - minInLookback > refillThreshold
                     && isRefillConfirmed(smoothed, i, currValue, refillThreshold)) {
-                // Refill detected AND confirmed by look-ahead persistence check.
-                total += segmentStart - lastValid;
-                // A gradual refill (multi-sample pour) would otherwise trigger a fresh
-                // "refill" on every intermediate rising sample. Take the MAXIMUM of the
-                // confirmation window as the post-refill baseline (top of the plateau) and
-                // fast-forward past the whole transition. Max is used instead of median
-                // because subsequent consumption within the window would drag a median down.
+                // Refill detected AND confirmed. Close the segment at the pre-refill level.
+                total += segmentStart - minInLookback;
+                // Take the median of the confirmation window as the post-refill baseline
+                // (robust to occasional spikes that survive the smoothing filter) and
+                // fast-forward past the whole transition so the next iteration doesn't
+                // re-trigger on the tail of the same refill.
                 int windowSize = Math.min(REFILL_CONFIRM_SAMPLES + FUEL_SMOOTHING_WINDOW / 2, n - i);
                 double[] baselineWindow = new double[windowSize];
                 double lastInWindow = currValue;
@@ -192,14 +212,11 @@ public class ReportUtils {
                 }
                 if (count > 0) {
                     java.util.Arrays.sort(baselineWindow, 0, count);
-                    // Median is robust to occasional spikes that survive the smoothing
-                    // filter (e.g. 2-3 sample bursts). On a stable plateau it matches
-                    // the plateau value; on a plateau with subsequent consumption it
-                    // lands in the middle - still a fair "typical" post-refill level.
                     segmentStart = baselineWindow[count / 2];
                 } else {
                     segmentStart = currValue;
                 }
+                segmentStartIndex = i;
                 // Preserve the actual value at the end of the window so subsequent
                 // consumption inside the window still contributes to the running total.
                 lastValid = lastInWindow;
