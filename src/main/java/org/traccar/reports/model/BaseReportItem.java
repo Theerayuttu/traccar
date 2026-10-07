@@ -103,6 +103,7 @@ public class BaseReportItem {
     public void setStartOdometer(double startOdometer) {
         this.startOdometer = startOdometer;
     }
+
     private double endOdometer;
 
     public double getEndOdometer() {
