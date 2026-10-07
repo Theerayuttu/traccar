@@ -20,6 +20,10 @@ public class StartekProtocolDecoderTest extends ProtocolTest {
         var decoder = inject(new StartekProtocolDecoder(null));
 
         verifyDecode(decoder, text(
+                        "&&b145,864299077188152,000,0,,261006091547,V,13.728580,100.731026,0,0.0,0,206,24,1857,520|4|D6E8|02E46EC3,23,00000039,12,00,09F3|018F|0000|09EA,131,,,,E2\r\n"),
+                position().attribute("int5", true));
+
+        verifyDecode(decoder, text(
                 "&&L171,868825064282040,000,0,,241209063302,A,13.809656,100.558255,14,0.9,0,0,67,1560,520|4|A418|008AAC3F,31,000000BD,02,00,04E3|0171|0000|0000,131,,,,3100  1  61000541  10800  ?FE\r\n"),
                 position().attribute(Position.KEY_DRIVER_UNIQUE_ID, "3100  1  61000541  10800  ?"));
 

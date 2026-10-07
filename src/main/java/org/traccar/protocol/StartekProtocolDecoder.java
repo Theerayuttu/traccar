@@ -109,6 +109,7 @@ public class StartekProtocolDecoder extends BaseProtocolDecoder {
             case 17 -> Position.ALARM_LOW_POWER;
             case 18 -> Position.ALARM_POWER_CUT;
             case 19 -> Position.ALARM_POWER_RESTORED;
+            case 20 -> Position.ALARM_LOW_BATTERY;
             case 39 -> Position.ALARM_ACCELERATION;
             case 40 -> Position.ALARM_BRAKING;
             case 41 -> Position.ALARM_CORNERING;
@@ -196,6 +197,8 @@ public class StartekProtocolDecoder extends BaseProtocolDecoder {
         boolean ignition = BitUtil.check(input, 1);
         position.set(Position.KEY_IGNITION, ignition);
         position.set("int3", BitUtil.check(input, 2));
+        position.set("int4", BitUtil.check(input, 3));
+        position.set("int5", BitUtil.check(input, 4));
         position.set(Position.KEY_INPUT, input);
         position.set(Position.KEY_OUTPUT, output);
         if (isEv) {
