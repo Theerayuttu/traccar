@@ -139,7 +139,7 @@ dependencies {
     implementation "org.apache.kafka:kafka-clients:4.3.1"
     implementation "com.hivemq:hivemq-mqtt-client:1.4.0"
     implementation "redis.clients:jedis:8.0.0"
-    implementation "com.google.firebase:firebase-admin:9.10.0"
+    implementation "com.google.firebase:firebase-admin:9.11.0"
     implementation "com.nimbusds:oauth2-oidc-sdk:11.38.2"
     implementation "com.rabbitmq:amqp-client:5.35.0"
     implementation "com.warrenstrange:googleauth:1.5.0"
@@ -160,7 +160,7 @@ processResources {
     }
 }
 
-tasks.register('copyDependencies', Copy) {
+tasks.register('copyDependencies', Sync) {
     into "$projectDir/target/lib"
     from configurations.runtimeClasspath
 }
@@ -170,7 +170,7 @@ jar {
     manifest {
         attributes(
                 "Main-Class": "org.traccar.Main",
-                "Implementation-Version": "6.15.3",
+                "Implementation-Version": "6.15.4",
                 "Class-Path": configurations.runtimeClasspath.files.collect { "lib/$it.name" }.join(" "))
     }
 }
