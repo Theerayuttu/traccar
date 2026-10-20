@@ -100,22 +100,23 @@ public class StartekProtocolDecoderTest extends ProtocolTest {
 
         // Input hex 02 → bit 1 = 1 → ignition on → ALARM_POWER_ON.
         // Slot 6 flags = 67 (0b01000011) → gear D (bits 6-7 = 01) + headlight + charging.
-        // OBD block (EV mapping):
-        //   RPM=3000, batteryPower raw=1500 → (1500-1000)/10 = 50.0 kW,
-        //   HV raw=4000 → 400.0 V, remainingPower=30, ODO=15234 (overrides main odo=925),
-        //   flags=67, batteryTemp raw=75 → 35°C, powerConsumption=12, SoC=85%.
+        // OBD block (EV mapping, V2.8):
+        //   RPM=3000, slot 2 empty (batteryPower moved to slot 8),
+        //   HV raw=147 → 147*4 = 588 V, remainingRange = 0*100 + 30 = 30 km,
+        //   flags=67, batteryTemp raw=75 → 35°C,
+        //   batteryPower raw=10450 → (10450-10000)/10 = 45.0 kW discharge, SoC=85%.
         String frame = "&&x164,868825064282040,000,0,,220705205955,A,33.326001,44.445318,10,1.2,0,57,8,"
                 + "925,418|40|038C|000083CD,31,00000015,02,00,0016|016A|0000|0000,1,,,"
-                + "3000|1500|4000|30|15234|67|75|12|85%FE\r\n";
+                + "3000||147|0|30|67|75|10450|85%FE\r\n";
 
         verifyDecode(decoder, text(frame), position().attribute(Position.KEY_RPM, 3000));
-        verifyDecode(decoder, text(frame), position().attribute("batteryPower", 50.0));
-        verifyDecode(decoder, text(frame), position().attribute("HV", 400.0));
-        verifyDecode(decoder, text(frame), position().attribute("remainingPower", 30));
-        verifyDecode(decoder, text(frame), position().attribute(Position.KEY_OBD_ODOMETER, 15234L));
+        verifyDecode(decoder, text(frame), position().attribute("batteryPower", 45.0));
+        verifyDecode(decoder, text(frame), position().attribute("HV", 588.0));
+        verifyDecode(decoder, text(frame), position().attribute("remainingRange", 30));
+        verifyDecode(decoder, text(frame), position().attribute(Position.KEY_OBD_ODOMETER, null));
         verifyDecode(decoder, text(frame), position().attribute("soc", 85));
         verifyDecode(decoder, text(frame), position().attribute("batteryTemp", 35));
-        verifyDecode(decoder, text(frame), position().attribute("powerConsumption", 12));
+        verifyDecode(decoder, text(frame), position().attribute("powerConsumption", null));
 
         // Slot 6 (flags=67) → bit0 charge, bit1 headlight, bits 6-7 = gear D.
         verifyDecode(decoder, text(frame), position().attribute(Position.KEY_CHARGE, true));
@@ -145,10 +146,10 @@ public class StartekProtocolDecoderTest extends ProtocolTest {
 
         // input=00 → ignition off → ALARM_POWER_OFF.
         // flags=0 → all boolean flags cleared, gearPositions="N" (bits 6-7 = 00).
-        // batteryPower raw=1000 → 0.0 kW (idle/parked).
+        // V2.8: slot 2 empty, slot 8 raw=10000 → (10000-10000)/10 = 0.0 kW (idle/parked).
         String frame = "&&x164,868825064282040,000,0,,220705205955,A,33.326001,44.445318,10,1.2,0,57,8,"
                 + "925,418|40|038C|000083CD,31,00000015,00,00,0016|016A|0000|0000,1,,,"
-                + "3000|1000|4000|30|15234|0|75|12|85%FE\r\n";
+                + "0||147|0|30|0|75|10000|85%FE\r\n";
 
         verifyDecode(decoder, text(frame), position().attribute(Position.KEY_IGNITION, false));
         verifyDecode(decoder, text(frame), position().attribute("poweroff", true));
@@ -166,17 +167,34 @@ public class StartekProtocolDecoderTest extends ProtocolTest {
     }
 
     @Test
-    public void testDecodeEvObdOdometerSeparateFromMain() throws Exception {
+    public void testDecodeEvBatteryPowerNoData() throws Exception {
 
         var decoder = injectEvDecoder("ev");
 
-        // EV slot 5 goes to KEY_OBD_ODOMETER — main KEY_ODOMETER (925) is never overwritten.
+        // V2.8: slot 8 raw=0 means no data (vehicle off / board boot) → batteryPower must NOT be set.
+        String frame = "&&x164,868825064282040,000,0,,220705205955,A,33.326001,44.445318,10,1.2,0,0,8,"
+                + "925,418|40|038C|000083CD,31,00000015,00,00,0016|016A|0000|0000,1,,,"
+                + "0||147|0|30|0|75|0|85%FE\r\n";
+
+        verifyDecode(decoder, text(frame), position().attribute("batteryPower", null));
+    }
+
+    @Test
+    public void testDecodeEvRemainingRangeTwoSlots() throws Exception {
+
+        var decoder = injectEvDecoder("ev");
+
+        // V2.6: remainingRange = slot4 * 100 + slot5 (km). slot 5 is NO LONGER OBD odometer.
+        //   slot4=3, slot5=25 → 325 km. KEY_OBD_ODOMETER must not be set.
+        //   Main KEY_ODOMETER (925) must remain untouched.
+        // V2.8: slot 2 empty, slot 8 = 10000 (0 kW).
         String frame = "&&x164,868825064282040,000,0,,220705205955,A,33.326001,44.445318,10,1.2,0,57,8,"
                 + "925,418|40|038C|000083CD,31,00000015,02,00,0016|016A|0000|0000,1,,,"
-                + "3000|1500|4000|30|15234|67|75|12|85%FE\r\n";
+                + "3000||147|3|25|67|75|10000|85%FE\r\n";
 
+        verifyDecode(decoder, text(frame), position().attribute("remainingRange", 325));
         verifyDecode(decoder, text(frame), position().attribute(Position.KEY_ODOMETER, 925L));
-        verifyDecode(decoder, text(frame), position().attribute(Position.KEY_OBD_ODOMETER, 15234L));
+        verifyDecode(decoder, text(frame), position().attribute(Position.KEY_OBD_ODOMETER, null));
     }
 
     @Test
@@ -184,11 +202,11 @@ public class StartekProtocolDecoderTest extends ProtocolTest {
 
         var decoder = injectEvDecoder("ev");
 
-        // batteryPower raw=700 → (700-1000)/10 = -30.0 kW (regenerative braking).
+        // V2.8: batteryPower from slot 8, raw=9700 → (9700-10000)/10 = -30.0 kW (regen).
         // flags=64 → gear D only.
         String frame = "&&x164,868825064282040,000,0,,220705205955,A,33.326001,44.445318,10,1.2,3,180,8,"
                 + "925,418|40|038C|000083CD,31,00000015,02,00,0016|016A|0000|0000,1,,,"
-                + "3000|700|4000|30|15240|64|75|12|85%FE\r\n";
+                + "3000||147|0|30|64|75|9700|85%FE\r\n";
 
         verifyDecode(decoder, text(frame), position().attribute("batteryPower", -30.0));
         verifyDecode(decoder, text(frame), position().attribute("gearPositions", "D"));
@@ -202,7 +220,7 @@ public class StartekProtocolDecoderTest extends ProtocolTest {
         // flags=144 (0b10010000) → gear R (bits 6-7 = 10) + parkingBrake (bit 4).
         String frame = "&&x164,868825064282040,000,0,,220705205955,A,33.326001,44.445318,10,1.2,0,0,8,"
                 + "925,418|40|038C|000083CD,31,00000015,02,00,0016|016A|0000|0000,1,,,"
-                + "0|1000|4000|0|15240|144|75|12|85%FE\r\n";
+                + "0||147|0|30|144|75|10000|85%FE\r\n";
 
         verifyDecode(decoder, text(frame), position().attribute("gearPositions", "R"));
         verifyDecode(decoder, text(frame), position().attribute("parkingBrake", true));
@@ -217,7 +235,7 @@ public class StartekProtocolDecoderTest extends ProtocolTest {
         // flags=192 (bits 6-7 = 11) → reserved gear code → gearPositions must NOT be set.
         String frame = "&&x164,868825064282040,000,0,,220705205955,A,33.326001,44.445318,10,1.2,0,0,8,"
                 + "925,418|40|038C|000083CD,31,00000015,02,00,0016|016A|0000|0000,1,,,"
-                + "0|1000|4000|0|15240|192|75|12|85%FE\r\n";
+                + "0||147|0|30|192|75|10000|85%FE\r\n";
 
         verifyDecode(decoder, text(frame), position().attribute("gearPositions", null));
     }

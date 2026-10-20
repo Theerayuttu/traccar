@@ -3,7 +3,7 @@
 **เอกสารสำหรับ:** ทีมพัฒนา Hardware (firmware GPS device)
 **ผู้ดูแล:** ทีม Backend (MarsX Things)
 **Protocol:** Startek TCP  |  **Port:** 5222
-**เวอร์ชันเอกสาร:** 1.3
+**เวอร์ชันเอกสาร:** 1.6
 
 ---
 
@@ -84,14 +84,19 @@ extCount,fuel,temp,<OBD_9_SLOTS>
 | # | ชื่อ Field | Attribute key | ประเภท | หน่วย | Range | Encoding (Hardware → raw ที่ส่ง) | Server แปลง |
 |:-:|---|---|:-:|:-:|---|---|---|
 | 1 | **Motor RPM** | `rpm` | int | rpm | 0-65535 | ส่งค่าตรงๆ | raw |
-| 2 | **Battery Power (±regen)** | `batteryPower` | **double** | kW | **±100.0** | **`(kW × 10) + 1000`** (bias +1000, signed) | `(raw − 1000) / 10.0` |
-| 3 | **Battery HV** | `HV` | **double** | V | 0-1000.0 | **`V × 10`** (precision 0.1) | `raw / 10.0` |
-| 4 | **Remaining Power** | `remainingPower` | int | kW | 0-1000 | ส่งค่าตรงๆ | raw |
-| 5 | **ODO** | `odometer` | long | km | 0-2 พันล้าน | ส่งค่าตรงๆ | **ส่ง 0 = ไม่ update** main odometer |
+| 2 | **(ว่าง)** | — | — | — | — | **ส่งเป็น empty ระหว่าง `\|\|`** | ไม่สร้าง attribute |
+| 3 | **Battery HV** | `HV` | **double** | V | 0-1016 | **`V ÷ 4`** (precision 4 V, 1-byte limit) | `raw × 4.0` |
+| 4 | **Remaining Range (high)** | `remainingRange` | int | **km** | 0-25,499 | **`km ÷ 100`** (หลักร้อย, 0-254) | (รวมกับ slot 5) |
+| 5 | **Remaining Range (low)** | — | — | — | 0-99 | **`km % 100`** (2 หลักท้าย) | **`remainingRange = slot4 × 100 + slot5`** |
 | 6 | **Status Flags** | (หลายค่า) | int (bitmask) | — | 0-255 | ดูข้อ 5.1 | ดูข้อ 5.1 |
 | 7 | **Battery Temp** | `batteryTemp` | int | °C | -40 ถึง 215 | **`actual + 40`** | `raw − 40` |
-| 8 | **Trip Consumption** | `powerConsumption` | int | kWh | 0-2 พันล้าน | ส่งค่าตรงๆ (cumulative) | raw |
+| 8 | **Battery Power (±regen)** | `batteryPower` | **double** | kW | **-999.9 ถึง +5553.4** | **`kW × 10 + 10000`** (16-bit, 1-65534, **0 = ไม่มีข้อมูล**) | `(raw − 10000) / 10.0` |
 | 9 | **SoC** | `soc` | int | % | 0-100 | ส่งค่าตรงๆ **ตามด้วย `%`** | raw |
+
+**หมายเหตุสำคัญ (V1.6):**
+- **Slot 2 ว่างเสมอ (V1.6)** — เดิมเก็บ batteryPower แต่ย้ายไป slot 8 (ซึ่งเป็น 16-bit ให้ความละเอียด 0.1 kW ตรงหน้าปัด) · HW ส่ง empty ระหว่าง `||`
+- **Slot 5 เลิกเป็น ODO** — เดิมใช้อัปเดต main odometer แต่ปัจจุบันถูกใช้ส่งเลข 2 หลักท้ายของ `remainingRange` → **HW ห้ามส่งค่า ODO ใน slot 5** (ค่าที่เกิน 99 จะทำให้ `remainingRange` ที่ decode ออกมาเพี้ยน)
+- **Slot 8 เปลี่ยนความหมาย (V1.6)** — เดิมเป็น `powerConsumption` (kWh สะสม) · ปัจจุบันเป็น `batteryPower` (kW) · **raw = 0 = ไม่มีข้อมูล** backend ไม่สร้าง attribute · แหล่งข้อมูล: BMS HV×I (ตรงหน้าปัด ตอนชาร์จติดลบถูกต้อง)
 
 ### 5.1 **Slot 6 (Status Flags) — Bitmask Detail** ⭐
 
@@ -252,38 +257,37 @@ INT3 signal:  ______┴───┴__________┴───┴__________┴──�
 
 ## 8. Full Payload Examples
 
-### 8.1 EV ขับ Drive กำลังชาร์จ + ไฟหน้าเปิด (consume 50 kW)
+### 8.1 EV ขับ Drive กำลังชาร์จ + ไฟหน้าเปิด (consume 45.5 kW)
 
 **สถานการณ์:**
-- Motor RPM 3000, Battery Power **+50.0 kW** (consume), Battery HV **400.0 V**
-- Remaining 30 kW, ODO 15234 km, Battery Temp 35°C
-- Trip Consumption 12 kWh, SoC 85%
-- Gear = **D**, Charging + Headlight
+- Motor RPM 3000, Battery Power **+45.5 kW** (consume), Battery HV **588 V**
+- Remaining Range **328 km**, Battery Temp 35°C
+- SoC 85%, Gear = **D**, Charging + Headlight
 - Ignition ON → input hex = `02`
 
 **Encoding:**
-- Battery Power raw = `(50 × 10) + 1000` = **1500**
-- Battery HV raw = `400.0 × 10` = **4000**
+- slot 2 **ว่าง** (V1.6: batteryPower ย้ายไป slot 8)
+- Battery HV raw = `588 ÷ 4` = **147**
+- Remaining Range: slot4 = `328 ÷ 100` = **3**, slot5 = `328 % 100` = **28**
 - Battery Temp raw = `35 + 40` = **75**
+- Battery Power raw = `45.5 × 10 + 10000` = **10455**
 - Flags = `64 (gear D) + 2 (headlight) + 1 (charge)` = **67**
 
 **Frame:**
 ```
 &&x173,868825064282040,000,0,,260721120000,A,13.809656,100.558255,10,1.2,0,57,8,925,
 418|40|038C|000083CD,31,00000015,02,00,0016|016A|0000|0000,1,,,
-3000|1500|4000|30|15234|67|75|12|85%FE\r\n
+3000||147|3|28|67|75|10455|85%FE\r\n
 ```
 
 **Server จะ decode ได้:**
 ```json
 {
   "rpm": 3000,
-  "batteryPower": 50.0,
-  "HV": 400.0,
-  "remainingPower": 30,
-  "odometer": 15234,
+  "batteryPower": 45.5,
+  "HV": 588.0,
+  "remainingRange": 328,
   "batteryTemp": 35,
-  "powerConsumption": 12,
   "soc": 85,
   "charge": true,
   "headlight": true,
@@ -295,22 +299,24 @@ INT3 signal:  ______┴───┴__________┴───┴__________┴──�
 
 ### 8.2 EV กำลัง regen (เบรก) — Battery Power ค่าติดลบ
 
-**สถานการณ์:** ขับ Drive อยู่ กำลังเบรก regen เข้า battery **−30.0 kW**, ไฟหน้าเปิด
+**สถานการณ์:** ขับ Drive อยู่ กำลังเบรก regen เข้า battery **−20.4 kW**, ไฟหน้าเปิด, ระยะเหลือ 325 km
 
 **Encoding:**
-- Battery Power raw = `(−30 × 10) + 1000` = **700**
+- Battery Power raw = `−20.4 × 10 + 10000` = **9796**
+- Remaining Range: slot4 = `3`, slot5 = `25`
 - Flags = `64 (gear D) + 2 (headlight)` = **66**
 
 **Frame OBD block:**
 ```
-3000|700|4000|30|15240|66|75|12|84%
+3000||147|3|25|66|75|9796|84%
 ```
 
 **Decode:**
 ```json
 {
-  "batteryPower": -30.0,    ← ค่าติดลบ = ไฟฟ้าเข้า battery (regen)
-  "HV": 400.0,
+  "batteryPower": -20.4,    ← ค่าติดลบ = ไฟฟ้าเข้า battery (regen)
+  "HV": 588.0,
+  "remainingRange": 325,
   "gearPositions": "D",
   "headlight": true,
   ...
@@ -319,23 +325,25 @@ INT3 signal:  ______┴───┴__________┴───┴__________┴──�
 
 ### 8.3 EV จอด + ดึงเบรกมือ + Gear N + ignition off
 
-**สถานการณ์:** Motor ไม่หมุน, Gear N, Parking Brake ดึง, ignition OFF
+**สถานการณ์:** Motor ไม่หมุน, Gear N, Parking Brake ดึง, ignition OFF, ระยะเหลือ 30 km · ไฟที่รถใช้เอง +3.4 kW
 
 **Encoding:**
-- Battery Power raw = `(0 × 10) + 1000` = **1000** (Battery ไม่มีการใช้/ชาร์จ)
+- Battery Power raw = `3.4 × 10 + 10000` = **10034**
+- Remaining Range: slot4 = `0`, slot5 = `30`
 - Flags = `16 (parking brake)` + `0 (gear N)` = **16**
 
 **Frame OBD block:**
 ```
-0|1000|4000|0|15234|16|70|12|85%
+0||147|0|30|16|70|10034|85%
 ```
 
 **Decode:**
 ```json
 {
   "rpm": 0,
-  "batteryPower": 0.0,
-  "HV": 400.0,
+  "batteryPower": 3.4,
+  "HV": 588.0,
+  "remainingRange": 30,
   "gearPositions": "N",
   "parkingBrake": true,
   "ignition": false,
@@ -343,28 +351,42 @@ INT3 signal:  ______┴───┴__________┴───┴__________┴──�
 }
 ```
 
-### 8.4 EV ถอย + Hazard
+### 8.4 EV ชาร์จ DC fast charger
 
-**สถานการณ์:** ถอยเข้าจอด, เปิด hazard, ignition ON
+**สถานการณ์:** จอดชาร์จ DC, ไฟฟ้าเข้าแบตแรง **−148.3 kW** (ตรงหน้าปัด), ignition OFF, ระยะเหลือ 220 km
 
 **Encoding:**
-- Battery Power raw = `(−5 × 10) + 1000` = **950** (regen เล็กน้อยตอนชะลอ)
-- Flags = `128 (gear R) + 32 (hazard)` = **160**
+- Battery Power raw = `−148.3 × 10 + 10000` = **8517**
+- Remaining Range: slot4 = `2`, slot5 = `20`
+- Flags = `16 (parking brake) + 1 (charge)` + `0 (gear N)` = **17**
 
 **Frame OBD block:**
 ```
-500|950|3980|20|15240|160|76|13|84%
+0||150|2|20|17|76|8517|75%
 ```
 
 **Decode:**
 ```json
 {
-  "batteryPower": -5.0,
-  "HV": 398.0,
-  "gearPositions": "R",
-  "hazard": true
+  "batteryPower": -148.3,
+  "HV": 600.0,
+  "remainingRange": 220,
+  "gearPositions": "N",
+  "parkingBrake": true,
+  "charge": true
 }
 ```
+
+### 8.5 รถดับ / บอร์ดเพิ่งเปิด (slot 8 = 0)
+
+**สถานการณ์:** ไม่มีข้อมูลจาก BMS → slot 8 ส่ง **0** → backend **ไม่สร้าง** `batteryPower`
+
+**Frame OBD block:**
+```
+0||147|0|30|16|75|0|85%
+```
+
+**Decode:** (ไม่มี `batteryPower` ใน JSON — attribute ถูกข้าม)
 
 ---
 
@@ -372,16 +394,19 @@ INT3 signal:  ______┴───┴__________┴───┴__________┴──�
 
 | กฎ | ค่าอย่างไร | ตัวอย่าง |
 |---|---|---|
-| **จำนวนเต็มบวก** (RPM, remainingPower, powerConsumption, SoC) | ส่งค่าตรงๆ | Motor RPM 3000 → ส่ง `3000` |
-| **Battery Power (±100 kW, 0.1 precision)** | **`(kW × 10) + 1000`** (bias) | +50 kW → `1500`; −30 kW → `700`; 0 kW → `1000` |
-| **Battery HV (0-1000 V, 0.1 precision)** | **`V × 10`** | 400.5 V → `4005` |
-| **Battery Temp (มีค่าติดลบได้)** | **`actual + 40`** | −20°C → `20`; 80°C → `120` |
+| **จำนวนเต็มบวก** (RPM, SoC) | ส่งค่าตรงๆ | Motor RPM 3000 → ส่ง `3000` |
+| **Slot 2 (V1.6)** | **ว่างเสมอ** — ส่ง empty ระหว่าง `\|\|` | เช่น `3000\|\|147\|...` |
+| **Battery HV (0-1016 V, 4 V precision)** | **`V ÷ 4`** (slot 3) | 588 V → `147` |
+| **Remaining Range (0-25,499 km, 1 km precision)** | **slot 4** = `km ÷ 100`, **slot 5** = `km % 100` | 328 km → slot4=`3`, slot5=`28`; 30 km → slot4=`0`, slot5=`30` |
+| **Battery Temp (มีค่าติดลบได้)** | **`actual + 40`** (slot 7) | −20°C → `20`; 80°C → `120` |
+| **Battery Power (V1.6: slot 8, -999.9 ถึง +5553.4 kW, 0.1 kW precision)** | **`kW × 10 + 10000`** (16-bit, 1-65534) · **0 = ไม่มีข้อมูล** | +45.5 kW → `10455`; −20.4 kW → `9796`; 0 kW → `10000`; ไม่มีข้อมูล → `0` |
 | **SoC** | ต่อท้ายด้วย `%` เสมอ | 85% → ส่ง `85%` |
-| **ODO = 0** | ไม่ update main odometer | ส่ง `0` เมื่อไม่รู้ค่า |
 | **Flags** | Bitmask 8 บิต (0-255) — 6 flag + 2 บิต gear | ดู 5.1 |
 | **Gear** | 2 บิต (bits 6-7) → N=0, D=64, R=128 | ห้ามส่ง 192 (reserved) |
-| **Field ว่าง (ไม่มีข้อมูล)** | ปล่อยว่างระหว่าง `\|` | เช่น `3000\|\|4000\|...` = ไม่มี Battery Power |
+| **Field ว่าง (ไม่มีข้อมูล)** | ปล่อยว่างระหว่าง `\|` | เช่น `3000\|\|147\|0\|30\|...` |
 | **Delimiter** | `\|` ระหว่าง OBD slots, `,` ระหว่าง field หลัก | อย่าสลับ! |
+| **ค่า 255 (= `0xFF`) ใน 1-byte slot** | **ห้ามส่ง** — ถือเป็น "ช่องว่าง" | HV > 1016 V → clamp เป็น 254 |
+| **ค่า 65535 (= `0xFFFF`) ใน slot 8** | **ห้ามส่ง** — iStartek ทิ้งทั้งก้อน | kW เกินช่วง → clamp เป็น 65534 |
 
 ---
 
@@ -414,25 +439,41 @@ Battery Temp = -20°C, ส่ง `20` (คือ -20+40)
 Binary 010011 → Decimal 19 → ส่ง `19`
 ```
 
-### ❌ ผิด: ส่ง Battery HV เป็นทศนิยม
+### ❌ ผิด: ส่ง Battery HV เป็นทศนิยม หรือเกิน 254
 ```
-Battery HV 400.5V, ส่ง `400.5`          ← ผิด! slot รับเฉพาะ (d+) ไม่รับจุด
+Battery HV 588.8V, ส่ง `588.8`          ← ผิด! slot รับเฉพาะ (d+) ไม่รับจุด
+Battery HV 588.8V, ส่ง `5888`           ← ผิด! iStartek บีบ slot 3 เหลือ 1 byte (0-254) ค่าเกิน 254 จะถูกตัด
 ```
-### ✅ ถูก: คูณ 10 ก่อนส่ง
+### ✅ ถูก: หาร 4 ก่อนส่ง (precision 4 V)
 ```
-Battery HV 400.5V → ส่ง `4005` (server จะหารด้วย 10 → 400.5)
+Battery HV 588.8V → ส่ง `147` (server จะคูณ 4 → 588)
+Battery HV 400V → ส่ง `100` (server → 400)
 ```
 
-### ❌ ผิด: ส่ง Battery Power ค่าติดลบตรงๆ
+### ❌ ผิด: ส่ง Battery Power ที่ slot 2 (V1.6: ย้ายไป slot 8 แล้ว)
 ```
-Battery Power = -30 kW (regen), ส่ง `-30`      ← ผิด! slot รับเฉพาะเลขบวก
+slot 2 = 145 (ตามสูตร V1.5)                   ← ผิด! V1.6 slot 2 ต้องว่าง
 ```
-### ✅ ถูก: ใช้ bias +1000
+### ✅ ถูก: slot 2 ว่าง · ส่ง batteryPower ที่ slot 8 ด้วยสูตร `kW × 10 + 10000`
 ```
-Battery Power = -30 kW → ส่ง `(-30 × 10) + 1000` = `700`
-Battery Power = +50 kW → ส่ง `(50 × 10) + 1000` = `1500`
-Battery Power = 0 kW → ส่ง `1000` (ไม่ใช่ `0`!)
+Battery Power = -20.4 kW → slot 8 = `-20.4 × 10 + 10000` = `9796`
+Battery Power = +45.5 kW → slot 8 = `45.5 × 10 + 10000` = `10455`
+Battery Power = 0 kW → slot 8 = `10000` (ไม่ใช่ `0`!)
+ไม่มีข้อมูล → slot 8 = `0` (backend ไม่สร้าง attribute)
 ```
+*หมายเหตุ: ค่าที่คูณ 10 เพื่อให้ได้ความละเอียด 0.1 kW ตรงหน้าปัดรถ · ค่าต้องอยู่ใน 1..65534 (0 = ไม่มีข้อมูล, 65535 = iStartek ทิ้งทั้งก้อน)*
+
+### ❌ ผิด: ส่ง Remaining Range ตรงๆ ใน slot 4
+```
+Remaining Range = 328 km, ส่ง slot4=`328`       ← ผิด! slot รับเฉพาะ 0-254
+```
+### ✅ ถูก: แยกเป็น 2 slot (V1.5)
+```
+Remaining Range = 328 km → slot4 = 328÷100 = `3`, slot5 = 328%100 = `28`
+Remaining Range = 30 km  → slot4 = `0`,          slot5 = `30`
+Remaining Range = 1000 km → slot4 = `10`,         slot5 = `0`
+```
+*หมายเหตุ: slot 5 เลิกเป็น ODO แล้ว — ห้ามส่งค่า odometer ใน slot 5*
 
 ### ❌ ผิด: ส่ง Gear เกินขอบเขต (bits 6-7 = 11)
 ```
@@ -454,10 +495,12 @@ Gear N → ไม่บวกอะไร (0)
 python tools/ev-simulator.py --imei <IMEI> --host <server>
 ```
 
-Simulator นี้ส่ง scenario ทดสอบ:
-1. Drive gear + Charging + Headlight, ignition ON, Battery Power +50.0 kW, SoC 85%
-2. Neutral + Parking Brake, ignition OFF, ทุก flag ปิด, Battery Power 0.0 kW
-3. Reverse gear + Hazard, regen -5.0 kW, ignition ON
+Simulator นี้ส่ง scenario ทดสอบ (V2.8 encoding):
+1. Parked + Parking Brake, +3.4 kW idle (ไฟที่รถใช้เอง), 30 km
+2. Driving long-range + Headlight, **+75.7 kW**, **328 km** (ทดสอบ slot4+slot5 split)
+3. Regen braking, **-20.4 kW**
+4. Peak discharge + Hazard, +150.0 kW
+5. **DC fast charging, -148.3 kW** (ตรงหน้าปัด)
 
 ### วิธียืนยันว่า HW ส่งถูก (หลัง deploy)
 1. เปิด Traccar Web → device นั้น → View position details
@@ -477,6 +520,9 @@ Simulator นี้ส่ง scenario ทดสอบ:
 | 1.1 | 2026-07-21 | Slot 2 เปลี่ยนจาก Motor Power → **Battery Power ±100 kW** (bias +1000, ×10). Slot 3 (Battery HV) เพิ่ม precision 0.1 (×10). Slot 6 flags: บิต 4 เปลี่ยน Reverse → **Parking Brake**, เพิ่ม **บิต 6-7 = Gear (N/D/R)**. Attribute keys: `HV`, `soc`, `powerConsumption`, `poweron`/`poweroff` |
 | 1.2 | 2026-07-21 | เพิ่ม **Section 7 — Event-Triggered Reporting via INT3**: HW ต้อง output +5 V trigger เข้า INT3 เมื่อมี event Headlight ON, Turn L/R ON, Parking Brake เปลี่ยนสถานะ, และ Gear เปลี่ยนตำแหน่ง |
 | 1.3 | 2026-07-21 | เพิ่ม `Position.ALARM_DRIVER_BEHAVIOR = "driverBehavior"` ใน model และเปลี่ยน alarm code 5/6 (Input3 active/inactive) จากเดิม `alarm: "door"` → `alarm: "driverBehavior"` เพื่อให้ตรงความหมายจริง (Section 7.5) |
+| 1.4 | 2026-10-08 | **Slot 3 (HV): สูตรเปลี่ยนจาก `raw / 10` → `raw × 4`** เพราะ iStartek บีบ slot เหลือ 1 byte (0-254) ค่า 5900+ จาก `V × 10` ส่งไม่ได้ (precision ลดจาก 0.1 V เหลือ 4 V, range เพิ่มเป็น 0-1016 V). **Slot 4: rename `remainingPower` (kW) → `remainingRange` (km)** เพื่อสะท้อนค่าจริงที่รถ Dongfeng EV ส่งมา (ระยะวิ่งที่เหลือจากหน้าปัด). Slot 2 (batteryPower) และ Slot 5 (odometer) firmware ไม่ส่งอีก (ติด 1-byte limit) decoder เดิมมี null-check อยู่แล้ว ไม่ต้องแก้ |
+| 1.5 | 2026-10-12 | **Slot 2 (batteryPower): สูตรเปลี่ยนจาก `(kW × 10) + 1000` → `kW + 100`** (offset +100, precision 1 kW, range -100..+154, clamp 0..254) — เพราะ 1-byte limit เดิมใส่ไม่ได้. **Slot 4+5 (remainingRange): เปลี่ยนเป็น split encoding** — slot 4 = `km ÷ 100`, slot 5 = `km % 100` (1 km precision, range 0-25,499). **Slot 5 เลิกเป็น ODO ถาวร** — decoder ไม่เขียน `KEY_OBD_ODOMETER` จาก slot 5 อีก (เพื่อไม่ให้ล้าง odometer จริงของรถ). ⚠️ Deploy order: **backend ก่อน แล้วค่อยแฟลช firmware** ไม่งั้น odometer หลักของรถจะถูกเขียนทับเป็น 0-99 km |
+| **1.6** | **2026-10-14** | **Slot 2 ว่างเสมอ** · **batteryPower ย้ายไป slot 8** (เดิม `powerConsumption`) ด้วยสูตร **`kW × 10 + 10000`** (16-bit, range −999.9..+5553.4 kW, precision **0.1 kW** ตรงหน้าปัด) · **slot 8 raw = 0 = ไม่มีข้อมูล** backend ไม่สร้าง attribute · **`powerConsumption` เลิกใช้ถาวร** · แหล่งข้อมูล batteryPower = BMS frame `0x0CFFEAF4` (HV×I) ตรงหน้าปัดทั้งขับและชาร์จ · ไม่มีความเสี่ยงเขียนทับข้อมูล (ไม่ต้อง deploy order เข้ม) |
 
 ---
 

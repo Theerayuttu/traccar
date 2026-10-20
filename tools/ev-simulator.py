@@ -1,10 +1,18 @@
 #!/usr/bin/env python3
 """
-Startek EV Frame Simulator
---------------------------
-Sends test EV position frames to a Traccar server that runs the modified
-StartekProtocolDecoder. Useful for end-to-end verification before the real
-EV hardware is available.
+Startek EV Frame Simulator (V2.8)
+---------------------------------
+Sends test EV position frames to a Traccar server running the modified
+StartekProtocolDecoder. Encoding matches firmware V2.8 spec:
+
+  slot 2 (empty)                                   # batteryPower moved to slot 8
+  slot 3 (HV)                    = V / 4           # factor 4, range 0..1016 V
+  slot 4 (remainingRange high)   = km / 100        # 0..254 hundreds-digit
+  slot 5 (remainingRange low)    = km % 100        # 0..99 last-two-digits
+                                                   # (slot 5 is NO LONGER OBD odometer)
+  slot 7 (batteryTemp)           = C + 40
+  slot 8 (batteryPower)          = kW * 10 + 10000 # 16-bit, 0.1 kW resolution
+                                                   # 0 = no data (skip attribute)
 
 Prerequisite on the Traccar server:
   1. Register a device with the same IMEI as `--imei`.
@@ -12,14 +20,9 @@ Prerequisite on the Traccar server:
   3. Make sure Startek TCP port (default 5222) is reachable.
 
 Examples:
-  # Localhost, default IMEI, 3 scenarios
-  python ev-simulator.py
-
-  # Custom server and IMEI
-  python ev-simulator.py --host 10.0.0.5 --port 5222 --imei 868825064282040
-
-  # Only send scenario 1
-  python ev-simulator.py --only 1
+  python ev-simulator.py                                    # all scenarios
+  python ev-simulator.py --host 10.0.0.5 --imei 868825...   # custom target
+  python ev-simulator.py --only 3                           # one scenario
 """
 import socket
 import argparse
@@ -42,7 +45,6 @@ def build_startek_frame(idx: str, imei: str, msg_type: str, content: str) -> str
     Length rule (from StartekFrameDecoder.java):
         length_value = len(body) - 3
     where body = <imei>,<type>,<content><checksum>\r\n
-    (Checksum is 2 hex chars; the protocol decoder does not verify its value.)
     """
     checksum = "FE"
     body = f"{imei},{msg_type},{content}{checksum}\r\n"
@@ -62,7 +64,7 @@ def encode_flags(
         hazard: bool = False,
         gear: str = "N") -> int:
     """
-    Build the slot-6 bitmask (spec v1.1):
+    Build the slot-6 bitmask (spec v1.3 ข้อ 5.1):
       bit 0 = charging, bit 1 = headlight, bit 2 = turn_left, bit 3 = turn_right,
       bit 4 = parking_brake, bit 5 = hazard, bits 6-7 = gear (N=0, D=1, R=2).
     """
@@ -85,6 +87,30 @@ def encode_flags(
     return flags
 
 
+def encode_battery_power(kw: float) -> int:
+    """V2.8: raw = kW * 10 + 10000 (16-bit, 0.1 kW resolution). Clamped to 1..65534.
+    raw = 0 means no data — pass kw=None (or use dedicated no-data path) to simulate."""
+    raw = int(round(kw * 10)) + 10000
+    if raw < 1 or raw > 65534:
+        raise ValueError(f"batteryPower {kw} kW out of range (-999.9..+5553.4)")
+    return raw
+
+
+def encode_hv(volts: float) -> int:
+    """V2.4: raw = V / 4 (factor 4). Clamped to 0..254."""
+    raw = int(round(volts / 4))
+    if raw < 0 or raw > 254:
+        raise ValueError(f"HV {volts} V out of range (0..1016)")
+    return raw
+
+
+def encode_remaining_range(km: int) -> tuple[int, int]:
+    """V2.6: split km into (slot4 = km / 100, slot5 = km % 100). Max 25,499 km."""
+    if km < 0 or km > 25499:
+        raise ValueError(f"remainingRange {km} km out of range (0..25499)")
+    return km // 100, km % 100
+
+
 def build_ev_position_content(
         timestamp: datetime,
         ignition: bool,
@@ -92,10 +118,8 @@ def build_ev_position_content(
         motor_rpm: int,
         battery_power_kw: float,
         battery_hv_v: float,
-        remaining_power: int,
-        odo: int,
+        remaining_range_km: int,
         battery_temp_c: int,
-        power_consumption: int,
         soc: int,
         lat: float = 13.809656,
         lon: float = 100.558255) -> str:
@@ -103,23 +127,20 @@ def build_ev_position_content(
     Compose the position-payload (type 000) content string. Values are placed
     into slots in the order defined by PATTERN_POSITION so the modified decoder
     interprets them as EV attributes.
-
-    Encoding rules (spec v1.1):
-      slot 2 (Battery Power)  = (kW * 10) + 1000            # bias +1000, signed
-      slot 3 (Battery HV)     = V * 10                      # precision 0.1
-      slot 7 (Battery Temp)   = actual_C + 40               # bias +40
     """
     date_str = timestamp.strftime("%y%m%d%H%M%S")
     input_hex = "02" if ignition else "00"       # bit 1 controls KEY_IGNITION
 
-    battery_power_raw = int(round(battery_power_kw * 10)) + 1000
-    battery_hv_raw = int(round(battery_hv_v * 10))
+    battery_power_raw = encode_battery_power(battery_power_kw)
+    battery_hv_raw = encode_hv(battery_hv_v)
     battery_temp_raw = battery_temp_c + 40
+    range_hi, range_lo = encode_remaining_range(remaining_range_km)
 
     # Extended OBD block (9 pipe-separated slots, always trailing with SoC%)
+    # V2.8: slot 2 empty, slot 8 carries batteryPower
     obd = (
-        f"{motor_rpm}|{battery_power_raw}|{battery_hv_raw}|{remaining_power}|{odo}|"
-        f"{flags}|{battery_temp_raw}|{power_consumption}|{soc}%"
+        f"{motor_rpm}||{battery_hv_raw}|{range_hi}|{range_lo}|"
+        f"{flags}|{battery_temp_raw}|{battery_power_raw}|{soc}%"
     )
 
     # Structure per PATTERN_POSITION:
@@ -133,18 +154,17 @@ def build_ev_position_content(
     )
 
 
-def send_frame(host: str, port: int, frame: str, label: str) -> None:
+def send_frame(host: str, port: int, frame: str, label: str, expected: str) -> None:
     """Open a fresh TCP connection, send one frame, close."""
     displayed = frame.replace("\r\n", "\\r\\n")
-    print(f"->{label}")
+    print(f"-> {label}")
+    print(f"   expected decode: {expected}")
     print(f"   {len(frame)} bytes: {displayed}")
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             s.settimeout(5)
             s.connect((host, port))
             s.sendall(frame.encode("ascii"))
-            # Startek server typically does not reply to a position frame,
-            # but drain briefly in case it does (e.g. error / ack).
             s.settimeout(1.0)
             try:
                 reply = s.recv(1024)
@@ -159,7 +179,7 @@ def send_frame(host: str, port: int, frame: str, label: str) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Send simulated Startek EV frames to a Traccar server.",
+        description="Send simulated Startek EV frames (V2.8) to a Traccar server.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("--host", default=DEFAULT_HOST,
@@ -170,55 +190,71 @@ def main() -> None:
                         help=f"Device IMEI (default {DEFAULT_IMEI})")
     parser.add_argument("--delay", type=float, default=2.0,
                         help="Seconds between frames (default 2.0)")
-    parser.add_argument("--only", type=int, choices=[1, 2, 3, 4], default=None,
-                        help="Send only scenario 1, 2, 3, or 4 (default: all)")
+    parser.add_argument("--only", type=int, choices=[1, 2, 3, 4, 5], default=None,
+                        help="Send only scenario 1-5 (default: all)")
     args = parser.parse_args()
 
     now = datetime.now(timezone.utc)
 
-    print("=== Startek EV Simulator ===")
+    print("=== Startek EV Simulator (V2.8) ===")
     print(f"Target : {args.host}:{args.port}")
     print(f"IMEI   : {args.imei}   (device category must start with 'ev')")
     print(f"Time   : {now.isoformat()}")
     print()
 
+    # Scenarios tuned for Dongfeng EV (HV ~590 V, real-world values from V2.8 log)
     scenarios = [
-        (1, "Ignition ON  |  Gear D + Charging + Headlight  |  consume 50.0 kW", dict(
-            ignition=True,
-            flags=encode_flags(charging=True, headlight=True, gear="D"),
-            motor_rpm=3000, battery_power_kw=50.0, battery_hv_v=400.5,
-            remaining_power=30, odo=15234, battery_temp_c=35,
-            power_consumption=12, soc=85)),
-        (2, "Ignition OFF |  Gear N + Parking Brake        |  parked, 0.0 kW", dict(
+        (1, "Parked | gear N + parking brake | +3.4 kW idle | HV 588 V | 30 km",
+         "batteryPower=3.4, HV=588, remainingRange=30, parkingBrake=true, gear=N",
+         dict(
             ignition=False,
             flags=encode_flags(parking_brake=True, gear="N"),
-            motor_rpm=0, battery_power_kw=0.0, battery_hv_v=400.0,
-            remaining_power=0, odo=15234, battery_temp_c=30,
-            power_consumption=12, soc=85)),
-        (3, "Ignition ON  |  Gear R + Hazard                |  regen -5.0 kW", dict(
-            ignition=True,
-            flags=encode_flags(hazard=True, gear="R"),
-            motor_rpm=500, battery_power_kw=-5.0, battery_hv_v=398.0,
-            remaining_power=20, odo=15240, battery_temp_c=36,
-            power_consumption=13, soc=84)),
-        (4, "Ignition ON  |  Gear D + Headlight             |  REGEN -30.0 kW", dict(
+            motor_rpm=0, battery_power_kw=3.4, battery_hv_v=588.0,
+            remaining_range_km=30, battery_temp_c=34, soc=30)),
+
+        (2, "Driving (long-range) | gear D + headlight | +75.7 kW | 328 km",
+         "batteryPower=75.7, HV=588, remainingRange=328 (slot4=3+slot5=28), headlight=true, gear=D",
+         dict(
             ignition=True,
             flags=encode_flags(headlight=True, gear="D"),
-            motor_rpm=2500, battery_power_kw=-30.0, battery_hv_v=402.3,
-            remaining_power=35, odo=15245, battery_temp_c=34,
-            power_consumption=14, soc=86)),
+            motor_rpm=3000, battery_power_kw=75.7, battery_hv_v=588.0,
+            remaining_range_km=328, battery_temp_c=36, soc=90)),
+
+        (3, "Regen braking | gear D | -20.4 kW",
+         "batteryPower=-20.4, HV=592, gear=D",
+         dict(
+            ignition=True,
+            flags=encode_flags(gear="D"),
+            motor_rpm=1800, battery_power_kw=-20.4, battery_hv_v=592.0,
+            remaining_range_km=325, battery_temp_c=36, soc=29)),
+
+        (4, "Peak discharge | gear D + hazard | +150 kW",
+         "batteryPower=150.0, HV=572, hazard=true, gear=D",
+         dict(
+            ignition=True,
+            flags=encode_flags(hazard=True, gear="D"),
+            motor_rpm=6500, battery_power_kw=150.0, battery_hv_v=572.0,
+            remaining_range_km=250, battery_temp_c=42, soc=25)),
+
+        (5, "DC fast charging | gear N | -148.3 kW (matches dashboard -143)",
+         "batteryPower=-148.3, HV=600, charge=true, parkingBrake=true, gear=N",
+         dict(
+            ignition=False,
+            flags=encode_flags(charging=True, parking_brake=True, gear="N"),
+            motor_rpm=0, battery_power_kw=-148.3, battery_hv_v=600.0,
+            remaining_range_km=85, battery_temp_c=38, soc=75)),
     ]
 
-    for i, (num, label, kwargs) in enumerate(scenarios):
+    for i, (num, label, expected, kwargs) in enumerate(scenarios):
         if args.only is not None and args.only != num:
             continue
         content = build_ev_position_content(timestamp=now, **kwargs)
         frame = build_startek_frame("x", args.imei, "000", content)
-        send_frame(args.host, args.port, frame, f"[{num}] {label}")
+        send_frame(args.host, args.port, frame, f"[{num}] {label}", expected)
         if i < len(scenarios) - 1 and args.only is None:
             time.sleep(args.delay)
 
-    print("Done. Open Traccar UI ->device details / API "
+    print("Done. Open Traccar UI -> device details / API "
           "/api/positions?deviceId=... to verify EV attributes.")
 
 

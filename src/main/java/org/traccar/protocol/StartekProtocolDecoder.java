@@ -241,44 +241,40 @@ public class StartekProtocolDecoder extends BaseProtocolDecoder {
             // Slot 1: Motor RPM (same key for both ICE and EV)
             position.set(Position.KEY_RPM, parser.nextInt());
 
-            // Slot 2: ENGINE_LOAD / EV Battery Power (kW, signed ±100, precision 0.1)
-            //   HW sends raw = (actual_kW * 10) + 1000 so range is 0..2000 (bias +1000).
-            //   Server recovers actual = (raw - 1000) / 10.0.
+            // Slot 2: ENGINE_LOAD (ICE only — V2.8 moved EV batteryPower to slot 8 for 0.1 kW
+            // resolution; slot 2 is always empty for EV).
             Integer slot2 = parser.nextInt();
-            if (isEv) {
-                if (slot2 != null) {
-                    position.set("batteryPower", (slot2 - 1000) / 10.0);
-                }
-            } else {
+            if (!isEv) {
                 position.set(Position.KEY_ENGINE_LOAD, slot2);
             }
 
-            // Slot 3: MAF flow / EV Battery HV (V, precision 0.1 → raw = actual * 10)
+            // Slot 3: MAF flow / EV Battery HV (V, precision 4 → raw = actual / 4)
+            // iStartek compresses slot 3 to 1 byte (0-254), so firmware sends V/4 (max 1016 V).
             Integer slot3 = parser.nextInt();
             if (isEv) {
                 if (slot3 != null) {
-                    position.set("HV", slot3 / 10.0);
+                    position.set("HV", slot3 * 4.0);
                 }
             } else {
                 position.set("airFlow", slot3);
             }
 
-            // Slot 4: Intake pressure / EV Remaining Power (kW)
+            // Slot 4: Intake pressure / EV Remaining Range high digit (V2.6: km / 100)
+            //   For EV, pair with slot 5 to form remainingRange = slot4 * 100 + slot5 (km).
             Integer slot4 = parser.nextInt();
-            if (isEv) {
-                if (slot4 != null) {
-                    position.set("remainingPower", slot4);
-                }
-            } else {
+            if (!isEv) {
                 position.set("airPressure", slot4);
             }
 
-            // Slot 5: Intake temp (bias -40) / EV KEY_OBD_ODOMETER (when > 0)
+            // Slot 5: Intake temp bias -40 / EV Remaining Range low digits (V2.6: km % 100)
+            //   V2.6: slot 5 is NO LONGER OBD odometer for EV — writing it would corrupt the
+            //   vehicle's real odometer (slot 5 now carries 0..99, not kilometers).
             if (parser.hasNext()) {
                 Integer slot5 = parser.nextInt();
                 if (isEv) {
-                    if (slot5 != null) {
-                        position.set(Position.KEY_OBD_ODOMETER, (long) slot5);
+                    if (slot4 != null) {
+                        int low = slot5 != null ? slot5 : 0;
+                        position.set("remainingRange", slot4 * 100 + low);
                     }
                 } else {
                     position.set("airTemp", slot5 - 40);
@@ -334,12 +330,15 @@ public class StartekProtocolDecoder extends BaseProtocolDecoder {
                 }
             }
 
-            // Slot 8: Instant fuel / EV Trip Consumption (kWh, cumulative from vehicle)
+            // Slot 8: Instant fuel / EV Battery Power (V2.8: 16-bit, kW * 10 + 10000, 0.1 kW resolution)
+            //   Source: BMS HV*I. raw = 0 means no data (vehicle off / board boot) — skip attribute.
             if (parser.hasNext()) {
-                int slot8 = parser.nextInt();
+                Integer slot8 = parser.nextInt();
                 if (isEv) {
-                    position.set("powerConsumption", slot8);
-                } else {
+                    if (slot8 != null && slot8 != 0) {
+                        position.set("batteryPower", (slot8 - 10000) / 10.0);
+                    }
+                } else if (slot8 != null) {
                     position.set(Position.KEY_FUEL_CONSUMPTION, slot8 / 10.0);
                 }
             }
