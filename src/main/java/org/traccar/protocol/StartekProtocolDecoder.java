@@ -147,6 +147,22 @@ public class StartekProtocolDecoder extends BaseProtocolDecoder {
         };
     }
 
+    // system-sta Bit7 = RFID/iButton login status (1=logged in, 0=logged out).
+    // "driverLoggedIn" is only set while logged in (true). Transition 1→0 emits a one-shot
+    // "driverLogout" flag by comparing with the cached previous position.
+    private void decodeStatus(DeviceSession deviceSession, Position position, int status) {
+        position.set(Position.KEY_STATUS, status);
+
+        if (BitUtil.check(status, 7)) {
+            position.set("driverLoggedIn", true);
+        } else {
+            Position last = getCacheManager().getPosition(deviceSession.getDeviceId());
+            if (last != null && last.getBoolean("driverLoggedIn")) {
+                position.set("driverLogout", true);
+            }
+        }
+    }
+
     private Object decodePosition(DeviceSession deviceSession, String content) {
 
         Parser parser = new Parser(PATTERN_POSITION, content);
@@ -190,7 +206,7 @@ public class StartekProtocolDecoder extends BaseProtocolDecoder {
         position.setNetwork(new Network(CellTower.from(
                 parser.nextInt(), parser.nextInt(), parser.nextHexInt(), parser.nextHexInt(), parser.nextInt())));
 
-        position.set(Position.KEY_STATUS, parser.nextHexInt());
+        decodeStatus(deviceSession, position, parser.nextHexInt());
 
         int input = parser.nextHexInt();
         int output = parser.nextHexInt();

@@ -261,6 +261,64 @@ public class StartekProtocolDecoderTest extends ProtocolTest {
                 position().attribute(Position.KEY_ALARM, Position.ALARM_DRIVER_BEHAVIOR));
     }
 
+    @Test
+    public void testDecodeDriverLoggedIn() throws Exception {
+
+        var decoder = inject(new StartekProtocolDecoder(null));
+
+        // status = 00000080 → Bit7=1 (RFID logged in). driverLogout must not fire on a login packet.
+        String frameLoggedIn = "&&l141,863911061945394,000,0,,230918072531,A,22.678598,114.045970,"
+                + "26,0.6,0,0,74,2286304571,460|0|249F|00001093,20,00000080,00,00,"
+                + "04A7|019C|0000|0000,1,C0\r\n";
+
+        verifyDecode(decoder, text(frameLoggedIn), position().attribute("driverLoggedIn", true));
+        verifyDecode(decoder, text(frameLoggedIn), position().attribute("driverLogout", null));
+    }
+
+    @Test
+    public void testDecodeDriverLogoutTransition() throws Exception {
+
+        // Prior position was logged in → current packet with Bit7=0 emits driverLogout=true
+        // and clears driverLoggedIn (not set on logout packets).
+        var lastLoggedIn = new Position();
+        lastLoggedIn.set("driverLoggedIn", true);
+        var decoder = injectDecoderWithLastPosition(lastLoggedIn);
+
+        String frameLogout = "&&l141,863911061945394,000,0,,230918072531,A,22.678598,114.045970,"
+                + "26,0.6,0,0,74,2286304571,460|0|249F|00001093,20,00000000,00,00,"
+                + "04A7|019C|0000|0000,1,C0\r\n";
+
+        verifyDecode(decoder, text(frameLogout), position().attribute("driverLoggedIn", null));
+        verifyDecode(decoder, text(frameLogout), position().attribute("driverLogout", true));
+    }
+
+    @Test
+    public void testDecodeContinuousLogoutDoesNotFire() throws Exception {
+
+        // Prior position was NOT logged in → current Bit7=0 must NOT emit driverLogout
+        // (fires only on the edge, not continuously).
+        var lastLoggedOut = new Position();
+        var decoder = injectDecoderWithLastPosition(lastLoggedOut);
+
+        String frameLogout = "&&l141,863911061945394,000,0,,230918072531,A,22.678598,114.045970,"
+                + "26,0.6,0,0,74,2286304571,460|0|249F|00001093,20,00000000,00,00,"
+                + "04A7|019C|0000|0000,1,C0\r\n";
+
+        verifyDecode(decoder, text(frameLogout), position().attribute("driverLogout", null));
+    }
+
+    private StartekProtocolDecoder injectDecoderWithLastPosition(Position last) throws Exception {
+        var decoder = inject(new StartekProtocolDecoder(null));
+        var device = mock(Device.class);
+        when(device.getId()).thenReturn(1L);
+        var cacheManager = mock(CacheManager.class);
+        when(cacheManager.getConfig()).thenReturn(new Config());
+        when(cacheManager.getObject(eq(Device.class), anyLong())).thenReturn(device);
+        when(cacheManager.getPosition(anyLong())).thenReturn(last);
+        decoder.setCacheManager(cacheManager);
+        return decoder;
+    }
+
     private StartekProtocolDecoder injectEvDecoder(String category) throws Exception {
         var decoder = inject(new StartekProtocolDecoder(null));
         var evDevice = mock(Device.class);
