@@ -82,7 +82,7 @@ public class FirebaseCommandSender implements CommandSender {
         ApnsConfig apnsConfig = ApnsConfig.builder()
                 .setAps(Aps.builder().setContentAvailable(true).build())
                 .putHeader("apns-push-type", "background")
-                .putHeader("apns-priority", "10")
+                .putHeader("apns-priority", "5")
                 .build();
 
         var messageBuilder = MulticastMessage.builder()
@@ -92,11 +92,17 @@ public class FirebaseCommandSender implements CommandSender {
         if (command.getType().equals(Command.TYPE_POSITION_PERIODIC)) {
             messageBuilder.putData("interval", String.valueOf(command.getInteger(Command.KEY_FREQUENCY)));
         }
+        for (String token : registrationTokens) {
+            if (token.length() == 22) {
+                messageBuilder.addFid(token);
+            } else {
+                messageBuilder.addToken(token);
+            }
+        }
 
         MulticastMessage message = messageBuilder
                 .setAndroidConfig(androidConfig)
                 .setApnsConfig(apnsConfig)
-                .addAllTokens(registrationTokens)
                 .build();
 
         var result = firebaseMessaging.sendEachForMulticast(message);
