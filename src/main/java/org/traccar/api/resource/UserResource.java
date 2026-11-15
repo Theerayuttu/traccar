@@ -91,7 +91,7 @@ public class UserResource extends BaseObjectResource<User> {
         }
         Columns columns = excludeAttributes ? new Columns.Exclude("attributes") : new Columns.All();
         return storage.getObjectsStream(baseClass, new Request(
-                columns, Condition.merge(conditions), new Order("name", false, limit, offset)));
+                columns, Condition.merge(conditions), new Order("id", true, limit, offset)));
     }
 
     @Override
